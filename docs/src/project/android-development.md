@@ -366,6 +366,60 @@ Official references:
 - [Command-line emulator and persistent AVD storage](https://developer.android.com/studio/run/emulator-commandline)
 - [Media3 device support and physical-device guidance](https://developer.android.com/media/media3/exoplayer/supported-devices)
 
+## ABEMA renewal check
+
+A debug build can run a real automatic ABEMA renewal now instead of waiting
+for its due time, through the same timer, operation, approval-browser and
+grant-handoff path (#689; see
+[the renewal section](source-network-routing.md#debug-renew-now-trigger-and-renewal-check--2026-11-24)).
+Each run is a real ABEMA account confirmation for the saved account. Run it by
+hand: never in CI, a loop or a scheduled task.
+
+```sh
+mise run android-abema-renewal-check emulator-5580 --expect-avd tachiai-dev --freeze
+mise run android-abema-renewal-check emulator-5580 --expect-avd tachiai-dev \
+  --apk apps/android/app/build/outputs/apk/debug/app-debug.apk --freeze
+```
+
+The serial is required; there is no default device. `--expect-avd` refuses an
+emulator reporting another AVD name. The command:
+
+1. With `--apk`, checks the shared debug signer and application ID, then
+   updates with `adb install -r`, keeping app data. With `ANDROID_HOME` unset it
+   uses the development device's SDK for `apksigner`.
+2. Launches Tachiai with the launcher intent (`LEANBACK_LAUNCHER` on a TV), so
+   the stream picker takes over in its own process and the default process is
+   left without a screen, as in #682.
+3. Fires the trigger: `adb shell content call --uri
+   content://net.fstab.tachiai.debug.abema-renewal --method renew`, with
+   `--instance` passed as `--arg` when several ABEMA instances have accounts.
+   A refusal such as `RUNNING` or `WINDOW_SPENT` ends the run before any
+   provider work. After a failed attempt, restart Tachiai (for example with
+   `--apk`) before trying again.
+4. With `--freeze`, from `--freeze-after` (3 s, once the page is under way)
+   until `--freeze-window` (30 s) after the trigger, freezes the default and
+   `:abema_approval_browser` processes with `am freeze` while Android ranks them cached (adjustment at or
+   above `freezer_cutoff_adj`) and each still has a part in the renewal. It
+   unfreezes them after `--freeze-seconds` (100 by default, past the 90-second
+   operation deadline) or at the result. This only makes the system's own rule
+   deterministic in time: `am freeze` on its own would also freeze a process
+   kept out of the cached state. The step needs `am freeze`/`unfreeze` in
+   `am help` and `use_freezer=true`; otherwise `--freeze` refuses before
+   triggering. Without it, if no result arrives within `--timeout` (120 s) the
+   command thaws any process the system froze, to collect the late result.
+5. Keeps only `TachiaiAbemaRenewal` and `TachiaiAbemaApproval` lines and
+   ActivityManager freezer lines naming Tachiai's processes. No URL, identity
+   or token is read or printed. `--log-file` also writes them to a file.
+6. Prints `PASS` only for `OPERATION_RESULT result=SUCCESS
+   cleanupConfirmed=true` with neither process frozen while it still had a part
+   (the default process until that result, the browser until its
+   `BROWSER_RESULT`). It also reports the duration from the trigger to the
+   result. Exit status is 0 for a pass, 1 for a fail and 2 for a refusal or
+   setup error.
+
+The trigger exists only in debug builds. It is absent from release, and the
+local inspection build disables it.
+
 ## Initial host observation — 2026-10-08
 
 On the Linux x86-64 development workstation, the selected SDK revisions installed

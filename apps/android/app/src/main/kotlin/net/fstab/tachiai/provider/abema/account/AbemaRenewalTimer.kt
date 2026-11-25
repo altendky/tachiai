@@ -56,12 +56,29 @@ internal class AbemaRenewalTimer(
         return runCatching { delay(remaining.coerceIn(0L, maximumWaitMs)) { due(instance, slot) } }.getOrDefault(false)
     }
 
-    private fun due(instance: String, slot: Slot) {
+    // Debug builds only (#689): the due path below for a saved grant, now. It
+    // bypasses only the due-time check; this window's single attempt, a
+    // running attempt and a manual approval still refuse. The caller runs it on
+    // the same worker as the timer's own callbacks.
+    fun trigger(instance: String): AbemaRenewalTrigger {
+        val slot = synchronized(this) {
+            val slot = slots[instance] ?: return AbemaRenewalTrigger.NO_ACCOUNT
+            if (instance in attempting) return AbemaRenewalTrigger.RUNNING
+            if (slot.fired) return AbemaRenewalTrigger.WINDOW_SPENT
+            if (runCatching(manualApproval).getOrDefault(true)) return AbemaRenewalTrigger.MANUAL_APPROVAL
+            slot
+        }
+        log("TIMER_TRIGGERED")
+        due(instance, slot, force = true)
+        return AbemaRenewalTrigger.STARTED
+    }
+
+    private fun due(instance: String, slot: Slot, force: Boolean = false) {
         val fired = synchronized(this) {
             if (slots[instance] !== slot || slot.fired) return
             val now = runCatching(wall).getOrNull()
             val due = runCatching { abemaRenewalDueWallMs(slot.generation) }.getOrNull()
-            if (now == null || due == null || now < due) {
+            if (!force && (now == null || due == null || now < due)) {
                 if (!arm(instance, slot)) slots.remove(instance)
                 return
             }
@@ -87,6 +104,11 @@ internal class AbemaRenewalTimer(
     }
 
     override fun toString() = "AbemaRenewalTimer(redacted)"
+}
+
+// The debug-only renew-now trigger's outcome (#689). Closed constants only.
+internal enum class AbemaRenewalTrigger {
+    STARTED, NO_ACCOUNT, AMBIGUOUS, RUNNING, WINDOW_SPENT, MANUAL_APPROVAL, UNAVAILABLE,
 }
 
 // One timer attempt through the foreground readiness path: the caller's own

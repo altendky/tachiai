@@ -125,6 +125,7 @@ internal object AndroidAbemaRenewalReadiness {
             android.util.Log.i("TachiaiAbemaRenewal", "OPERATION_RESULT result=${outcome.result.name} " +
                 "cleanupConfirmed=${outcome.cleanupConfirmed} ${outcome.diagnostic.logFields()}")
             outcome.producerDiagnostic?.let { android.util.Log.i("TachiaiAbemaRenewal", "OPERATION_PRODUCER ${it.logFields()}") }
+            AbemaRenewalForcedAdmission.close()
             retries.completed(work, outcome, ownerCancelled)
             if (outcome.result == AbemaAutomaticRenewalResult.SUCCESS && outcome.cleanupConfirmed)
                 work.binding.accepted()
@@ -220,7 +221,9 @@ internal object AndroidAbemaRenewalReadiness {
             if (wall < record.acceptedWallMs || decodedAbemaGrant(record.grant.bearer, record.grant.userId,
                     record.acceptedWallMs).expiresAtMs != record.grant.expiresAtMs)
                 return AbemaRenewalReservation.NoWork(failed().status)
-            if (wall < record.grant.expiresAtMs - leadMs.coerceIn(0L, ABEMA_RENEWAL_LEAD_MS)) {
+            // Only the job and timer (leadMs > 0) can use the debug trigger's admission (#689).
+            if (wall < record.grant.expiresAtMs - leadMs.coerceIn(0L, ABEMA_RENEWAL_LEAD_MS) &&
+                    !(leadMs > 0L && AbemaRenewalForcedAdmission.admits(record))) {
                 invalidateTarget()
                 return AbemaRenewalReservation.NoWork(AbemaRenewalReadinessCoordinator.Status.READY)
             }
@@ -253,6 +256,8 @@ internal object AndroidAbemaRenewalReadiness {
             System.currentTimeMillis() >= work.beganWall && abemaRenewalSnapshotMatches(work.expected,
                 work.binding.store.readSnapshot(), System.currentTimeMillis()) && coordinator.current(ticket) }.getOrDefault(false)
     fun cancelUnclaimed(ticket: String) = coordinator.cancelUnclaimed(ticket)
+    // The debug-only renew-now trigger (#689) refuses while this is true.
+    fun busy() = coordinator.busy()
 
     // In-process, closed observation only: no readiness request or grant leaves
     // this process, and a different owner/predecessor cannot satisfy the probe.

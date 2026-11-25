@@ -69,6 +69,10 @@ run = "uv run scripts/android-dev-device.py install"
 description = "Apply the repo's dark-mode and navigation preferences to the owned emulator"
 run = "uv run scripts/android-dev-device.py configure"
 
+[tasks.android-abema-renewal-check]
+description = "Force one real ABEMA renewal on an explicit device (debug build) and report pass/fail; manual only"
+run = "uv run scripts/android-abema-renewal-check.py"
+
 [tasks.android-tv-setup]
 description = "Create the persistent Android TV development device"
 run = "uv run scripts/android-dev-device.py --device tv setup"

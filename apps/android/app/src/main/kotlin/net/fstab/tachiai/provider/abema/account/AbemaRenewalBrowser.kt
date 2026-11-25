@@ -181,12 +181,19 @@ internal class AndroidAbemaRenewalBrowser(context: Context, private val network:
         }
         main.postDelayed({
             if (result == null) {
+                // How late this deadline ran: a large value means this process
+                // was frozen or otherwise not running (#682). Closed scalar only.
+                android.util.Log.i("TachiaiAbemaRenewal", "BROWSER_DEADLINE lateMs=" +
+                    abemaRenewalLateMs(request.deadlineElapsedMs, SystemClock.elapsedRealtime()))
                 diagnostics.refuse(AbemaRenewalDiagnostic.Phase.LIFETIME, AbemaRenewalDiagnostic.Reason.DEADLINE)
                 expired = true; cancel()
             }
         }, request.deadlineElapsedMs - SystemClock.elapsedRealtime())
-        // A lost result must not strand the operation, nor imply cleanup.
-        main.postDelayed({ finish(AbemaRenewalBrowserResult.CLEANUP_UNCONFIRMED) },
+        // A lost result must not strand the operation, nor imply cleanup. After
+        // a freeze this guard runs together with the deadline above; once that
+        // deadline's cancel() has armed its own 7-second watchdog, the browser
+        // still gets those 7 seconds to report its cleanup (#682).
+        main.postDelayed({ if (!cancellationWatchdog) finish(AbemaRenewalBrowserResult.CLEANUP_UNCONFIRMED) },
             maxOf(0L, request.deadlineElapsedMs - SystemClock.elapsedRealtime()) + 7_000L)
         try {
             bound = context.bindService(Intent(context, AbemaRenewalBrowserService::class.java), this, Context.BIND_AUTO_CREATE)

@@ -62,6 +62,9 @@ class AbemaRenewalBrowserService : Service() {
                     if (it == AbemaApprovalObservation.CLEANUP_UNCONFIRMED) cleanupUnconfirmed = true
                 }, networkEgressFactory = start.egressFactory())
             main.postDelayed({
+                // What the page was waiting for (#682): closed counts and states only.
+                runtime?.let { android.util.Log.i("TachiaiAbemaRenewal",
+                    "BROWSER_STALL ${it.stallFields(parsed.deadlineElapsedMs)}") }
                 runtime?.diagnostic?.let(diagnostics::absorb)
                 diagnostics.refuse(AbemaRenewalDiagnostic.Phase.LIFETIME, AbemaRenewalDiagnostic.Reason.DEADLINE)
                 timedOut = true; cancel()

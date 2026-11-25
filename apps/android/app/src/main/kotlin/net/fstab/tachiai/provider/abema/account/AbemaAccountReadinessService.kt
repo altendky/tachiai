@@ -281,16 +281,23 @@ internal object AndroidAbemaRenewalReadiness {
     }.getOrNull()
 
     private fun createOperation(context: Context, ticket: String, work: Work,
-        completed: (AbemaRenewalOperationOutcome) -> Unit): AbemaAccountRenewalOperation =
-        AbemaAccountRenewalOperation(work.binding, work.owner, work.expected, work.deadline,
-            AndroidAbemaRenewalBrowser(context, work.network?.network), AndroidAbemaEmailGrantHandoff.inbox,
-            AbemaAccountWorkers.worker, AbemaAccountWorkers.cancellation,
-            { action -> check(main.post(action)) }, { delay, action -> check(main.postDelayed(action, delay)) },
-            SystemClock::elapsedRealtime, System::currentTimeMillis, { coordinator.current(ticket) },
-            beforeApproval = { id, deadline, gate ->
-                net.fstab.tachiai.platform.network.ProviderStartupScopeCleanup.awaitReady(id, deadline, gate)
-            }, completed = completed,
-            completionUnavailable = completed)
+        completed: (AbemaRenewalOperationOutcome) -> Unit): AbemaAccountRenewalOperation {
+        // Keeps this process and the browser process out of the cached state
+        // until the operation completes (#682).
+        val release = AndroidAbemaRenewalHold.acquire(context, work.deadline)
+        val done: (AbemaRenewalOperationOutcome) -> Unit = { outcome -> try { completed(outcome) } finally { release() } }
+        return try {
+            AbemaAccountRenewalOperation(work.binding, work.owner, work.expected, work.deadline,
+                AndroidAbemaRenewalBrowser(context, work.network?.network), AndroidAbemaEmailGrantHandoff.inbox,
+                AbemaAccountWorkers.worker, AbemaAccountWorkers.cancellation,
+                { action -> check(main.post(action)) }, { delay, action -> check(main.postDelayed(action, delay)) },
+                SystemClock::elapsedRealtime, System::currentTimeMillis, { coordinator.current(ticket) },
+                beforeApproval = { id, deadline, gate ->
+                    net.fstab.tachiai.platform.network.ProviderStartupScopeCleanup.awaitReady(id, deadline, gate)
+                }, completed = done,
+                completionUnavailable = done)
+        } catch (error: Throwable) { release(); throw error }
+    }
 }
 
 // Same-UID observers initiate/join application-owned renewal. No grant fields

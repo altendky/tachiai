@@ -140,6 +140,8 @@ internal class ViewerTapGesture(private val windowMs: Long) {
 internal fun viewerSkipRefusal(plan: NativePairSkipPlan, forward: Boolean, pair: Boolean, live: Boolean = false): String? {
     val blocked = plan.blockedBy?.name?.takeIf { pair }
     val limited = plan.limitedBy?.name?.takeIf { pair }
+    if (plan.outcome != NativeSeekOutcome.REQUESTED && plan.outcome != NativeSeekOutcome.CLAMPED)
+        plan.reason?.let { return "$it; neither feed moved." } // A pair's refusal after holding (#660).
     return when (plan.outcome) {
         NativeSeekOutcome.REQUESTED, NativeSeekOutcome.CLAMPED -> null
         NativeSeekOutcome.NO_CHANGE -> when {

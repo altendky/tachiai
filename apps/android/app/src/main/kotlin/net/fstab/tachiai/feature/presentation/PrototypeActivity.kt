@@ -1252,7 +1252,7 @@ open class PrototypeActivity : ComponentActivity() {
         val result = current.seekTogether(delta)
         if (result.outcome == NativeSeekOutcome.REQUESTED || result.outcome == NativeSeekOutcome.CLAMPED) invalidatePlay()
         Log.d("TachiaiPrototype", "transport=SKIP deltaMs=$delta movementMs=${result.movementMs} outcome=${result.outcome}" +
-            (result.blockedBy?.let { " blockedBy=$it" } ?: ""))
+            (result.blockedBy?.let { " blockedBy=$it" } ?: "") + (result.reason?.let { " reason=\"$it\"" } ?: ""))
         publishPairTransport()
         return result
     }
@@ -1279,7 +1279,7 @@ open class PrototypeActivity : ComponentActivity() {
             pairOffsetSession?.invalidate(pair, "Returned to live; reopen this pair to reapply its saved offset.")
         }
         Log.d("TachiaiPrototype", "transport=LIVE movementMs=${result.movementMs} keepsOffset=${result.keepsOffset} " +
-            "outcome=${result.outcome}" + (result.blockedBy?.let { " blockedBy=$it" } ?: ""))
+            "outcome=${result.outcome}" + (result.blockedBy?.let { " blockedBy=$it" } ?: "") + (result.reason?.let { " reason=\"$it\"" } ?: ""))
         publishPairTransport()
         return result
     }

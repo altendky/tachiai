@@ -146,6 +146,10 @@ class ViewerTransportTest {
             viewerSkipRefusal(outside, true, true, live = true))
         assertEquals("The feed is outside its window; use Back to live in ⋯ More.",
             viewerSkipRefusal(outside, true, false, live = true))
+        // A pair's refusal after holding both feeds carries its own reason.
+        assertEquals("B changed while holding both feeds; neither feed moved.", viewerSkipRefusal(
+            NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE, blockedBy = NativeMixedSide.B,
+                reason = "B changed while holding both feeds"), true, true, live = true))
     }
 
     @Test fun liveSaysWhetherAPairKeptItsOffsetAfterBringingAFeedBack() {

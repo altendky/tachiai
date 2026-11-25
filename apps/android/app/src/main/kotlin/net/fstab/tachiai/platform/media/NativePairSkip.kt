@@ -21,7 +21,33 @@ internal data class NativePairSkipPlan(
     val limitedBy: NativeMixedSide? = null,
     val limitedAtLive: Boolean = false,
     val keepsOffset: Boolean = true,
+    // Why a pair refused after holding both feeds, naming the feed (#660).
+    val reason: String? = null,
 )
+
+// A plan rechecked after holding both feeds differs from the one made while
+// they played by the few milliseconds between the reads: a playing feed's
+// position, and a live point taken from the continuous live offset, move on.
+// More than this is a real change (#660).
+internal const val HOLD_RECHECK_TOLERANCE_MS = 1_000L
+
+// The feed whose planned move changed between the plan made before holding
+// and the held recheck: moved in one and not the other, by a movement more
+// than the tolerance apart, or with the offset kept in one and not the other.
+// Null when they agree.
+internal fun skipPlanDrift(initial: NativePairSkipPlan, fresh: NativePairSkipPlan): NativeMixedSide? {
+    val before = initial.targets.associate { it.side to it.targetMs - it.fromMs }
+    val after = fresh.targets.associate { it.side to it.targetMs - it.fromMs }
+    for (side in NativeMixedSide.entries) {
+        val planned = before[side]
+        val held = after[side]
+        if (planned == null && held == null) continue
+        if (planned == null || held == null || kotlin.math.abs(planned - held) > HOLD_RECHECK_TOLERANCE_MS) return side
+    }
+    if (initial.keepsOffset != fresh.keepsOffset)
+        return fresh.blockedBy ?: fresh.targets.firstOrNull()?.side ?: NativeMixedSide.A
+    return null
+}
 
 // A forward skip stops this far before the nearest end, so skipping never ends
 // a feed (an ended feed fails into Play again); playing to the end is unchanged.

@@ -792,6 +792,14 @@ delay; older footage that was never recorded can't be reached.
   is reopened. A feed ahead of its window's end can't be repaired this way;
   the notice points to Back to live in ⋯ More. Live pressed while a skip
   settles runs once it has settled.
+- **Holding a pair:** a pair skip or Live plans while both feeds play, holds
+  both, then plans again on the held feeds. A playing feed's position and its
+  live point move on between those two reads, so the plans agree when each
+  feed's move differs by at most 1 s, and the held plan is the one used. If
+  something really changed, such as an advertisement starting or a feed
+  stalling, nothing is sought, both feeds play on, and the notice names the
+  feed and the reason, such as "B changed while holding both feeds; neither
+  feed moved."
 - **Pairs:** a skip moves both feeds by one amount, as for replays. Each
   feed's own **Back to live A · title** / **B · title** is in **⋯ More**
   (a single feed: **Back to live · title**), and still breaks the offset; the

@@ -532,4 +532,118 @@ class NativePairSkipTest {
         assertEquals(NativeMixedSide.B, refused.blockedBy)
         assertTrue(behind.seeks.isEmpty())
     }
+
+    // A live feed driven by a clock that moves on with every read, as a real
+    // player's position and live offset do while it plays (#660). sliding:
+    // a constant-length window whose start advances, like a recorded Twitch
+    // HLS window (#699); otherwise a window that grows from a fixed start,
+    // like a recorded ABEMA DASH window. The default position sits a snapped
+    // segment behind the target live offset.
+    private class ClockedLive(private val clock: LongArray, private val sliding: Boolean, private val windowMs: Long,
+        private val targetMs: Long, behindLiveEdgeMs: Long) : NativePairMember {
+        private val firstStart = clock[0] - 2_000 - windowMs
+        var content = clock[0] - behindLiveEdgeMs
+        var playing = true
+        var lastNow = clock[0]
+        // Applied once the pair holds: a feed that changes while held.
+        var onHold: (ClockedLive) -> Unit = {}
+        val seeks = mutableListOf<Long>()
+        private fun read(): Long {
+            clock[0] += 3
+            if (playing) content += clock[0] - lastNow
+            lastNow = clock[0]
+            return clock[0]
+        }
+        override fun timingSnapshot(): NativeTimingSnapshot {
+            val now = read()
+            val end = now - 2_000
+            val start = if (sliding) end - windowMs else firstStart
+            val position = content - start
+            val duration = end - start
+            return NativeTimingSnapshot(position, duration, position + 5_000, now - content, start,
+                duration - targetMs - 1_500, true, true, true, true, false, playing, playing, 3, 1f, targetMs)
+        }
+        override fun seekToMs(targetMs: Long): NativeSeekPlan {
+            val sample = timingSnapshot()
+            val plan = nativeSeekPlan(sample, targetMs)
+            plan.targetMs?.let { seeks += it; content = checkNotNull(sample.windowStartMs) + it }
+            return plan
+        }
+        override fun setTimingPlaying(playing: Boolean): Boolean {
+            read(); this.playing = playing
+            if (!playing) onHold(this)
+            return true
+        }
+        override fun setVolume(volume: Float) = true
+        override fun close() {}
+        fun behindLivePoint() = checkNotNull(nativeBehindLivePointMs(timingSnapshot()))
+    }
+
+    private class ClockedPair {
+        val clock = longArrayOf(1_700_000_000_000L)
+        // ABEMA about 3:20 behind in a growing ~300 s window; Twitch about
+        // 3:16 behind in a constant 238 s window, about 40 s into it.
+        val abema = ClockedLive(clock, sliding = false, windowMs = 300_000, targetMs = 10_000, behindLiveEdgeMs = 210_000)
+        val twitch = ClockedLive(clock, sliding = true, windowMs = 238_000, targetMs = 6_000, behindLiveEdgeMs = 202_000)
+        val pair = NativeMixedPair(abema, twitch, { true }, {}, { clock[0] })
+    }
+
+    @Test fun aPlayingLivePairSkipsForwardAcrossTheHoldWhileItsClocksMoveOn() {
+        val fixture = ClockedPair()
+        val before = fixture.twitch.content - fixture.abema.content
+        val plan = fixture.pair.seekTogether(60_000)
+        assertEquals(NativeSeekOutcome.REQUESTED, plan.outcome)
+        assertEquals(60_000L, plan.movementMs)
+        assertEquals(1, fixture.abema.seeks.size)
+        assertEquals(1, fixture.twitch.seeks.size)
+        fixture.pair.poll()
+        assertFalse(fixture.pair.busy)
+        assertTrue(fixture.abema.playing && fixture.twitch.playing)
+        // Both moved by one amount: the offset holds to within the reads' few ms.
+        assertTrue(kotlin.math.abs(fixture.twitch.content - fixture.abema.content - before) < 100)
+    }
+
+    @Test fun aPlayingLivePairGoesLiveAcrossTheHoldKeepingItsOffset() {
+        val fixture = ClockedPair()
+        val before = fixture.twitch.content - fixture.abema.content
+        val plan = fixture.pair.goLive()
+        assertEquals(NativeSeekOutcome.REQUESTED, plan.outcome)
+        assertTrue(plan.keepsOffset)
+        assertNull(plan.reason)
+        // Twitch is the nearer to its live point (196 s against 200 s).
+        assertEquals(NativeMixedSide.B, plan.limitedBy)
+        fixture.pair.poll()
+        assertFalse(fixture.pair.busy)
+        assertTrue(fixture.twitch.behindLivePoint() <= 1_000)
+        assertTrue(kotlin.math.abs(fixture.twitch.content - fixture.abema.content - before) < 100)
+        // A forward skip from there is at the live point, give or take the reads.
+        val next = nativePairSkipPlan(mapOf(
+            NativeMixedSide.A to fixture.abema.timingSnapshot(), NativeMixedSide.B to fixture.twitch.timingSnapshot()), 10_000)
+        assertTrue(next.limitedAtLive && next.movementMs <= 1_000)
+    }
+
+    @Test fun aRealChangeWhileHeldIsNamedAndPlaybackGoesOn() {
+        val fixture = ClockedPair()
+        // Twitch stalls 5 s back once held: its live point is now 5 s further away.
+        fixture.twitch.onHold = { it.content -= 5_000 }
+        val plan = fixture.pair.goLive()
+        assertEquals(NativeSeekOutcome.UNAVAILABLE, plan.outcome)
+        assertEquals(NativeMixedSide.B, plan.blockedBy)
+        assertEquals("B changed while holding both feeds", plan.reason)
+        assertTrue(fixture.abema.seeks.isEmpty() && fixture.twitch.seeks.isEmpty())
+        assertFalse(fixture.pair.busy)
+        assertTrue(fixture.abema.playing && fixture.twitch.playing) // Nothing moved, so both play on.
+        assertEquals("B changed while holding both feeds; neither feed moved.", fixture.pair.status)
+    }
+
+    @Test fun heldPlansAgreeWithinTheReadToleranceOnly() {
+        fun plan(movementA: Long, movementB: Long?, keeps: Boolean = true) = NativePairSkipPlan(NativeSeekOutcome.REQUESTED,
+            movementA, listOfNotNull(NativeSkipTarget(A, 0, movementA), movementB?.let { NativeSkipTarget(B, 0, it) }),
+            keepsOffset = keeps)
+        assertNull(skipPlanDrift(plan(60_000, 60_000), plan(60_000, 60_000)))
+        assertNull(skipPlanDrift(plan(194_000, 194_000), plan(194_009, 194_009)))
+        assertEquals(B, skipPlanDrift(plan(194_000, 194_000), plan(194_000, 199_000)))
+        assertEquals(B, skipPlanDrift(plan(20_000, 20_000), plan(20_000, null)))
+        assertEquals(A, skipPlanDrift(plan(20_000, 20_000), plan(20_000, 20_000, keeps = false)))
+    }
 }

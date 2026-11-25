@@ -459,14 +459,36 @@ internal class NativeMixedPair(
             if (!closed && generation == expected) { pause(); status = message }
             return NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE)
         }
+        // Nothing has been sought yet: name the reason and let playback go on.
+        fun refuseUnmoved(plan: NativePairSkipPlan, reason: String): NativePairSkipPlan {
+            if (closed || generation != expected) return plan.copy(reason = reason)
+            val resumed = resume && play()
+            status = if (resumed) "$reason; neither feed moved." else "$reason; neither feed moved; both paused."
+            return plan.copy(reason = reason)
+        }
         val freshA = snapshot(a); val freshB = snapshot(b)
-        // Recheck the held feeds: the same plan must still give the same targets.
-        val fresh = planner(mapOf(NativeMixedSide.A to freshA, NativeMixedSide.B to freshB))
-        fun targets(plan: NativePairSkipPlan) = plan.targets.map { it.side to it.targetMs }
-        if (!current() || !heldReady(freshA) || !heldReady(freshB) ||
-            fresh.outcome !in setOf(NativeSeekOutcome.REQUESTED, NativeSeekOutcome.CLAMPED) ||
-            targets(fresh) != targets(initial) || fresh.keepsOffset != initial.keepsOffset)
-            return refuse("Skip refused after holding both feeds; both paused.")
+        if (!current()) return refuse("Skip authorization lost; both paused.")
+        val held = mapOf(NativeMixedSide.A to freshA, NativeMixedSide.B to freshB)
+        held.entries.firstOrNull { !heldReady(it.value) }?.let { (side, _) ->
+            return refuseUnmoved(NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE, blockedBy = side),
+                "$side wasn't ready once held")
+        }
+        // Recheck the held feeds with the same plan. A playing feed's position,
+        // and a live point taken from the continuous live offset, advance
+        // between the two reads, so targets agree within a small tolerance;
+        // the fresh, held targets are the ones dispatched (#660).
+        val fresh = planner(held)
+        if (fresh.outcome != NativeSeekOutcome.REQUESTED && fresh.outcome != NativeSeekOutcome.CLAMPED)
+            return refuseUnmoved(fresh, heldRefusalReason(fresh))
+        // Name the feed whose own move changed; a shared move changes for both.
+        val pre = mapOf(NativeMixedSide.A to sa, NativeMixedSide.B to sb)
+        val drifted = skipPlanDrift(initial, fresh)?.let { shared ->
+            NativeMixedSide.entries.firstOrNull { side ->
+                skipPlanDrift(planner(mapOf(side to pre[side])), planner(mapOf(side to held[side]))) != null
+            } ?: shared
+        }
+        if (drifted != null) return refuseUnmoved(NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE, blockedBy = drifted),
+            "$drifted changed while holding both feeds")
         val wasValid = requestedAdjustmentValid
         busy = true
         lastTimingAttempt = Any()
@@ -487,14 +509,26 @@ internal class NativeMixedPair(
             }
         }
         // Feeds moved by different amounts no longer hold the requested offset.
-        requestedAdjustmentValid = wasValid && initial.keepsOffset
+        requestedAdjustmentValid = wasValid && fresh.keepsOffset
         val started = clockMs()
         if (!current()) return refuse("Skip authorization lost; both paused.")
         skipPending = SkipPending(fresh.targets, resume, started, expected,
             minOf(100L, fresh.targets.minOf { kotlin.math.abs(it.targetMs - it.fromMs) } / 2), before)
         // Keep the previous status: a skip is not a status change to announce.
         status = before
-        return initial
+        return fresh
+    }
+
+    private fun heldRefusalReason(plan: NativePairSkipPlan): String {
+        val side = plan.blockedBy ?: plan.limitedBy
+        val subject = side?.name ?: "A feed"
+        return when (plan.outcome) {
+            NativeSeekOutcome.AD_BLOCKED -> "$subject started an advertisement while holding both feeds"
+            NativeSeekOutcome.UNSUPPORTED -> "$subject can no longer skip"
+            NativeSeekOutcome.OUTSIDE_WINDOW -> "$subject is outside its window"
+            NativeSeekOutcome.NO_CHANGE -> if (plan.limitedAtLive) "$subject is live" else "$subject can't move any further"
+            else -> "$subject wasn't ready once held"
+        }
     }
 
     // Return already moved feeds to where they were. If that is refused, the

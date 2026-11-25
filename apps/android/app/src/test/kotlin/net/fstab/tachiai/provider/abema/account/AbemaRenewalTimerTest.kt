@@ -26,7 +26,7 @@ class AbemaRenewalTimerTest {
         val clock = Clock()
         var manual = false
         val fired = mutableListOf<AbemaRenewalGeneration>()
-        var done: (() -> Unit)? = null
+        var done: ((Boolean) -> Unit)? = null
         val logs = mutableListOf<String>()
         val timer = AbemaRenewalTimer({ clock.now }, clock::delay, { manual },
             { _, generation, finished -> fired.add(generation); done = finished }, logs::add)
@@ -50,6 +50,7 @@ class AbemaRenewalTimerTest {
         var reserves = 0
         var manual = false
         var finished = 0
+        val retried = mutableListOf<Boolean>()
         var generation = GENERATION
         lateinit var loop: AbemaRenewalRetryLoop<Work, Operation>
         val admission = AbemaRenewalOwnedAdmission(coordinator, ConcurrentHashMap<String, Operation>(),
@@ -67,7 +68,7 @@ class AbemaRenewalTimerTest {
         fun run() = AbemaRenewalTimerRun(INSTANCE, GENERATION, clock.now + AbemaReadinessIpc.LIMIT_MS, Executor { it.run() },
             { clock.now }, { AbemaRenewalJobPreflight(TARGET, generation) },
             { _, deadline, admitted -> reserves++; reserve(true, deadline, admitted) },
-            { !manual }, clock::delay, { finished++ }, logs::add).also { it.start() }
+            { !manual }, clock::delay, { finished++; retried.add(it) }, logs::add).also { it.start() }
         fun finish(result: AbemaAutomaticRenewalResult) =
             constructed.last().completed(AbemaRenewalOperationOutcome(result, true))
     }
@@ -89,7 +90,7 @@ class AbemaRenewalTimerTest {
         f.clock.advance(1)
         assertEquals(listOf(GENERATION), f.fired)
         assertEquals("TIMER_FIRED", f.logs.last())
-        f.done!!()
+        f.done!!(false)
         // One timer attempt per expiry window; the job covers the rest.
         f.timer.reconcile(mapOf(INSTANCE to GENERATION))
         f.clock.advance(60 * MINUTE)
@@ -130,7 +131,7 @@ class AbemaRenewalTimerTest {
         val f = TimerFixture()
         f.timer.reconcile(mapOf(INSTANCE to GENERATION))
         f.clock.advance(45 * MINUTE)
-        f.done!!()
+        f.done!!(false)
         f.timer.reconcile(mapOf(INSTANCE to RENEWED))
         assertEquals(2, f.logs.count { it == "TIMER_SCHEDULED" })
         assertFalse(f.timer.current(INSTANCE, GENERATION))
@@ -151,7 +152,7 @@ class AbemaRenewalTimerTest {
         assertEquals(2, f.logs.count { it == "TIMER_SCHEDULED" })
         f.clock.advance(MINUTE)
         assertEquals(1, f.fired.size) // The first attempt is still running.
-        f.done!!()
+        f.done!!(false)
         f.clock.advance(ABEMA_RENEWAL_TIMER_MANUAL_RECHECK_MS)
         assertEquals(2, f.fired.size)
     }
@@ -250,6 +251,91 @@ class AbemaRenewalTimerTest {
         f.run()
         assertEquals(0, f.reserves)
         assertEquals("TIMER_RESULT result=STALE", f.logs.last())
+    }
+
+    // #682: a renewal stopped by a deadline (for example one that passed while
+    // the process was frozen) has no time left for the readiness retry loop.
+    @Test fun anAttemptWithoutAResultIsRetriedTwiceAfterTheTimerRetryWaits() {
+        val f = TimerFixture()
+        f.timer.reconcile(mapOf(INSTANCE to GENERATION))
+        f.clock.advance(45 * MINUTE)
+        assertEquals(1, f.fired.size)
+        f.done!!(true)
+        assertEquals("TIMER_RETRY_SCHEDULED attempt=1", f.logs.last())
+        f.clock.advance(ABEMA_RENEWAL_TIMER_RETRY_MS[0] - 1)
+        assertEquals(1, f.fired.size)
+        f.clock.advance(1)
+        assertEquals(2, f.fired.size)
+        f.done!!(true)
+        f.clock.advance(ABEMA_RENEWAL_TIMER_RETRY_MS[1])
+        assertEquals(3, f.fired.size)
+        // Bounded: the job and on-demand renewal cover the rest of the window.
+        f.done!!(true)
+        f.clock.advance(60 * MINUTE)
+        assertEquals(3, f.fired.size)
+        assertTrue(f.clock.idle())
+    }
+
+    @Test fun aFinalResultOrAReplacedWindowIsNotRetried() {
+        val final = TimerFixture()
+        final.timer.reconcile(mapOf(INSTANCE to GENERATION))
+        final.clock.advance(45 * MINUTE)
+        final.done!!(false)
+        final.clock.advance(60 * MINUTE)
+        assertEquals(1, final.fired.size)
+        assertFalse(final.logs.any { it.startsWith("TIMER_RETRY_SCHEDULED") })
+
+        val replaced = TimerFixture()
+        replaced.timer.reconcile(mapOf(INSTANCE to GENERATION))
+        replaced.clock.advance(45 * MINUTE)
+        replaced.timer.reconcile(mapOf(INSTANCE to RENEWED))
+        replaced.done!!(true)
+        replaced.clock.advance(ABEMA_RENEWAL_TIMER_RETRY_MS.sum())
+        assertEquals(listOf(GENERATION), replaced.fired)
+    }
+
+    @Test fun aRetryStillWaitsForAManualApproval() {
+        val f = TimerFixture()
+        f.timer.reconcile(mapOf(INSTANCE to GENERATION))
+        f.clock.advance(45 * MINUTE)
+        f.manual = true
+        f.done!!(true)
+        f.clock.advance(ABEMA_RENEWAL_TIMER_RETRY_MS[0] + ABEMA_RENEWAL_TIMER_MANUAL_RECHECK_MS)
+        assertEquals(1, f.fired.size)
+        f.manual = false
+        f.clock.advance(ABEMA_RENEWAL_TIMER_MANUAL_RECHECK_MS)
+        assertEquals(2, f.fired.size)
+    }
+
+    @Test fun aRunReportsWhetherItsAttemptEndedWithoutAResult() {
+        val success = RunFixture()
+        success.run()
+        success.finish(AbemaAutomaticRenewalResult.SUCCESS)
+        success.clock.advance(500)
+        assertEquals(listOf(false), success.retried)
+
+        // Every readiness retry fails too, until the loop stops for the deadline.
+        val failing = RunFixture()
+        failing.run()
+        repeat(4) {
+            failing.finish(AbemaAutomaticRenewalResult.TEMPORARY_FAILURE)
+            failing.clock.advance(ABEMA_RENEWAL_RETRY_BACKOFF_MS.last() + 500)
+        }
+        failing.clock.advance(AbemaReadinessIpc.LIMIT_MS)
+        assertEquals(listOf(true), failing.retried)
+
+        // A deadline that passed with the renewal still unfinished.
+        val stalled = RunFixture()
+        stalled.run()
+        stalled.clock.advance(AbemaReadinessIpc.LIMIT_MS + 500)
+        assertEquals(listOf(true), stalled.retried)
+
+        val interaction = RunFixture()
+        interaction.run()
+        interaction.finish(AbemaAutomaticRenewalResult.INTERACTION_REQUIRED)
+        interaction.clock.advance(500)
+        assertEquals("TIMER_RESULT result=INTERACTION_REQUIRED", interaction.logs.last())
+        assertEquals(listOf(false), interaction.retried)
     }
 
     @Test fun resumeStartupReadinessIsRemoved() {

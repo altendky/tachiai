@@ -318,6 +318,13 @@ route or setup changes reschedule it; a manual approval in progress postpones
 it. The renewal job still covers a process that is not running. Screens are
 unchanged.
 
+Since #682, a renewal in flight keeps a JobScheduler job running, so Android
+doesn't freeze the renewal while the stream picker or viewer, which run in a
+separate process, are in front.
+The timer also retries an attempt that ended without a result, 30 seconds and
+then 2 minutes later. Screens are unchanged; see
+[renewal stalls in frozen processes](source-network-routing.md#renewal-stalls-in-frozen-processes--2026-11-24).
+
 Since #635 step 6, account access for playback, guest discovery and the
 in-process ABEMA catalogs no longer fails outright on an expired saved grant.
 The acquisition asks the main process's foreground readiness path (its own

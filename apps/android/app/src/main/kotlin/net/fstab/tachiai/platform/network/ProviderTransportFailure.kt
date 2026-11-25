@@ -20,6 +20,8 @@ internal enum class ProviderTransportPhase { UNKNOWN, DNS, CONNECT, TLS, REQUEST
 internal enum class ProviderTransportExceptionKind {
     UNKNOWN, TLS_HANDSHAKE, TLS_PEER, TLS_OTHER, DNS, CONNECT, SOCKET_TIMEOUT,
     PROTOCOL, EOF, SOCKET, CHANNEL_CLOSED, INTERRUPTED_IO, IO, OTHER,
+    // Our own loopback route refused the CONNECT; the bridge logs the reason.
+    ROUTE_REFUSED,
 }
 internal enum class ProviderTransportOperation {
     UNKNOWN, CALL, DNS, CONNECT, TLS, REQUEST_HEADERS, REQUEST_HEADERS_COMPLETE,
@@ -50,7 +52,8 @@ internal interface ProviderTransportFailureCarrier {
 
 // No original exception, URL, response, headers or private message is retained.
 internal class ProviderTransportException(val evidence: ProviderTransportEvidence) :
-    IOException("Routed HTTPS request failed"), ProviderTransportFailureCarrier {
+    IOException(if (evidence.exceptionKind == ProviderTransportExceptionKind.ROUTE_REFUSED) "Route refused connection"
+        else "Routed HTTPS request failed"), ProviderTransportFailureCarrier {
     override val transportFailure get() = evidence
 }
 

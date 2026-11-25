@@ -8,12 +8,17 @@ import java.util.concurrent.atomic.AtomicBoolean
 internal const val ABEMA_RENEWAL_TIMER_MAXIMUM_WAIT_MS = 5 * 60_000L
 // While a manual approval holds the approval browser, the timer looks again after this.
 internal const val ABEMA_RENEWAL_TIMER_MANUAL_RECHECK_MS = 30_000L
+// After an attempt that ended without a result (a temporary failure, or a stop
+// such as a deadline the readiness retry loop can no longer retry within), the
+// timer tries again after these waits, at most once each per window (#682).
+internal val ABEMA_RENEWAL_TIMER_RETRY_MS = listOf(30_000L, 2 * 60_000L)
 
 // Main-process RAM only (#635 step 5). While the process lives, each saved
 // ABEMA grant gets one renewal attempt at the renewal job's first due time
 // (15 minutes before expiry, not before half its lifetime). The renewal job
 // remains the wake-up when the process is dead; either one joins the other's
-// renewal in flight. A changed grant generation (renewal
+// renewal in flight. An attempt that ends without a result is retried after
+// ABEMA_RENEWAL_TIMER_RETRY_MS (#682). A changed grant generation (renewal
 // or acceptance) schedules a new window; a route or setup change (reset)
 // allows one more attempt in the current window. Closed constants only in logs.
 internal class AbemaRenewalTimer(
@@ -21,16 +26,19 @@ internal class AbemaRenewalTimer(
     // Runs the action after the delay; false if it could not be scheduled.
     private val delay: (Long, () -> Unit) -> Boolean,
     private val manualApproval: () -> Boolean,
-    // Starts one attempt, which calls the last argument once it has ended.
-    private val fire: (String, AbemaRenewalGeneration, () -> Unit) -> Unit,
+    // Starts one attempt, which calls the last argument once it has ended,
+    // with true if it ended without a result and may be retried.
+    private val fire: (String, AbemaRenewalGeneration, (Boolean) -> Unit) -> Unit,
     private val log: (String) -> Unit = {},
     private val maximumWaitMs: Long = ABEMA_RENEWAL_TIMER_MAXIMUM_WAIT_MS,
     private val manualRecheckMs: Long = ABEMA_RENEWAL_TIMER_MANUAL_RECHECK_MS,
+    private val retryMs: List<Long> = ABEMA_RENEWAL_TIMER_RETRY_MS,
 ) {
     // Slot identity is the schedule token: a replaced slot's callbacks do nothing.
     private class Slot(val generation: AbemaRenewalGeneration) {
         var fired = false
         var postponed = false
+        var retries = 0
     }
     private val slots = HashMap<String, Slot>()
     private val attempting = HashSet<String>()
@@ -99,8 +107,17 @@ internal class AbemaRenewalTimer(
         }
         log("TIMER_FIRED")
         val ended = AtomicBoolean()
-        val done = { if (ended.compareAndSet(false, true)) synchronized(this) { attempting.remove(instance) } }
-        try { fire(instance, fired) { done() } } catch (_: Throwable) { done() }
+        val done = { retry: Boolean -> if (ended.compareAndSet(false, true)) synchronized(this) {
+            attempting.remove(instance)
+            // Only the same window's slot retries; a replaced one has its own schedule.
+            if (retry && slots[instance] === slot && slot.retries < retryMs.size) {
+                val wait = retryMs[slot.retries++]
+                slot.fired = false
+                if (arm(instance, slot, wait)) log("TIMER_RETRY_SCHEDULED attempt=${slot.retries}")
+                else slots.remove(instance)
+            }
+        } }
+        try { fire(instance, fired) { done(it) } } catch (_: Throwable) { done(false) }
     }
 
     override fun toString() = "AbemaRenewalTimer(redacted)"
@@ -126,7 +143,8 @@ internal class AbemaRenewalTimerRun(
     private val reserve: (AbemaReadinessTarget, Long, () -> Boolean) -> AbemaRenewalReservation,
     private val admitted: () -> Boolean,
     private val delay: (Long, () -> Unit) -> Boolean,
-    private val finished: () -> Unit,
+    // True when the attempt ended without a result and the timer may retry it.
+    private val finished: (Boolean) -> Unit,
     // Closed constants only.
     private val log: (String) -> Unit = {},
     private val pollMs: Long = 500,
@@ -175,8 +193,16 @@ internal class AbemaRenewalTimerRun(
     private fun end(result: String) {
         if (!ended.compareAndSet(false, true)) return
         log("TIMER_RESULT result=$result")
-        runCatching(finished)
+        // A temporary failure, or a stop or timeout before any result (for
+        // example a deadline that passed while the process was frozen, #682).
+        // Final, interaction and storage results are not retried. An unconfirmed
+        // cleanup reads as a temporary failure here, but its retained work
+        // keeps the renewal slot, so a retry only observes that result again.
+        runCatching { finished(result in ABEMA_RENEWAL_TIMER_RETRIED_RESULTS) }
     }
 
     override fun toString() = "AbemaRenewalTimerRun(redacted)"
 }
+
+private val ABEMA_RENEWAL_TIMER_RETRIED_RESULTS =
+    setOf(AbemaRenewalReadinessCoordinator.Status.TEMPORARY_FAILURE.name, "STOPPED", "TIMED_OUT")

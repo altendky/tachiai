@@ -13,7 +13,7 @@ internal interface RouteEngine : AutoCloseable {
 
 internal class NativeRouteEngine(private val engine: Engine) : RouteEngine {
     override fun lease(security: RouteProxySecurity): RouteBackend = NativeRouteBackend(
-        engine.lease(security.username, security.password, security.realm, security.allowedHosts))
+        engine.lease(security.username, security.password, security.realm, security.allowedHosts), security.purpose)
     override fun close() = engine.close()
     override fun toString() = "NativeRouteEngine(secrets hidden)"
 }
@@ -37,7 +37,7 @@ internal class RouteEngineOwner(
             Thread(task, "route-engine-retire").apply { isDaemon = true }
         }
         // Process role only (for example "main" or "prototype_cached_player").
-        private val role by lazy {
+        internal val role by lazy {
             runCatching { if (android.os.Build.VERSION.SDK_INT >= 28)
                 android.app.Application.getProcessName().substringAfter(':', "main") else "unknown" }.getOrDefault("unknown")
                 .takeIf { it.matches(Regex("[A-Za-z0-9_]{1,40}")) } ?: "unknown"

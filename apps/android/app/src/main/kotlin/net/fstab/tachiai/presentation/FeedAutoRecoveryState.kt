@@ -137,7 +137,7 @@ internal class FeedAutoRecoveryState {
         return recent.stage in setOf(NativeFailureStage.MEDIA_REQUEST_OPEN, NativeFailureStage.MEDIA_REQUEST_READ) &&
             (evidence.failure in setOf(ProviderTransportFailure.DNS, ProviderTransportFailure.CONNECT,
                 ProviderTransportFailure.TIMEOUT) || evidence.failure == ProviderTransportFailure.UNKNOWN &&
-                evidence.exceptionKind == ProviderTransportExceptionKind.IO)
+                evidence.exceptionKind in setOf(ProviderTransportExceptionKind.IO, ProviderTransportExceptionKind.ROUTE_REFUSED))
     }
 
     private fun retryableHttpFailure(httpFailure: NativePlaybackHttpFailure?, live: Boolean): Boolean {

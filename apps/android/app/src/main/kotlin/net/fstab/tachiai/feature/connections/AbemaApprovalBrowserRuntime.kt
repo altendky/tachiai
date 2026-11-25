@@ -121,6 +121,9 @@ internal class AbemaApprovalBrowserRuntime(
 ) {
     private val diagnostics = AbemaRenewalDiagnostics()
     internal val diagnostic get() = diagnostics.snapshot()
+    private val stall = AbemaRenewalStallRecord(SystemClock::elapsedRealtime)
+    // Closed counts and states of what the page was waiting for (#682).
+    internal fun stallFields(deadlineElapsedMs: Long) = stall.logFields(deadlineElapsedMs)
     private val applicationContext get() = context.applicationContext
     private val packageName get() = context.packageName
     companion object {
@@ -179,6 +182,7 @@ internal class AbemaApprovalBrowserRuntime(
             finishDirect(); return
         }
         claimed = true
+        stall.started()
         try {
             if (!profileConfigured) {
                 WebView.setDataDirectorySuffix(AbemaApprovalBrowserPolicy.PROFILE_SUFFIX)
@@ -362,6 +366,7 @@ internal class AbemaApprovalBrowserRuntime(
     private fun client() = object : WebViewClient() {
         override fun onPageStarted(browser: WebView, url: String?, favicon: android.graphics.Bitmap?) {
             Log.i(LOG_TAG, "PAGE_STARTED"); observed(AbemaApprovalObservation.PAGE_STARTED)
+            stall.page(AbemaRenewalStallRecord.Page.STARTED)
             watchCommit()
             trustedEmailPage = request.emailNonce != null && url?.let {
                 runCatching { java.net.URI(it).host == "abema.tv" && AbemaApprovalBrowserPolicy.allowedNavigation(it) }.getOrDefault(false)
@@ -370,10 +375,13 @@ internal class AbemaApprovalBrowserRuntime(
         }
         override fun onPageCommitVisible(browser: WebView, url: String?) {
             Log.i(LOG_TAG, "PAGE_COMMITTED"); observed(AbemaApprovalObservation.PAGE_COMMITTED)
+            stall.page(AbemaRenewalStallRecord.Page.COMMITTED)
             committed = true
             if (!current() || url == null || !AbemaApprovalBrowserPolicy.allowedNavigation(url)) refuse(Phase.PAGE, Reason.NAVIGATION_REFUSED)
         }
-        override fun onPageFinished(browser: WebView, url: String?) { Log.i(LOG_TAG, "PAGE_FINISHED") }
+        override fun onPageFinished(browser: WebView, url: String?) {
+            Log.i(LOG_TAG, "PAGE_FINISHED"); stall.page(AbemaRenewalStallRecord.Page.FINISHED)
+        }
         override fun shouldOverrideUrlLoading(browser: WebView, resource: WebResourceRequest): Boolean {
             val refused = !current() || !AbemaApprovalBrowserPolicy.allowedNavigation(resource.url.toString())
             if (refused && current()) status("This destination is unavailable in ABEMA account approval.")
@@ -393,6 +401,7 @@ internal class AbemaApprovalBrowserRuntime(
         }
         override fun onReceivedError(browser: WebView, resource: WebResourceRequest, error: WebResourceError) {
             observed(AbemaApprovalObservation.NETWORK_ERROR)
+            stall.error(stallKind(resource))
             inspectResource("NETWORK_ERROR", resource, error.errorCode.coerceIn(-16, 0))
             if (request.automaticReturn && !ending && fatalAutomaticResource(resource)) { refuse(Phase.PAGE, Reason.NETWORK_ERROR); return }
             if (resource.url.host == AbemaApprovalBrowserPolicy.GATEWAY_HOST)
@@ -404,6 +413,7 @@ internal class AbemaApprovalBrowserRuntime(
         }
         override fun onReceivedHttpError(browser: WebView, resource: WebResourceRequest, response: WebResourceResponse) {
             observed(AbemaApprovalObservation.HTTP_ERROR)
+            stall.error(stallKind(resource))
             inspectResource("HTTP_ERROR", resource, response.statusCode.coerceIn(100, 599))
             if (request.automaticReturn && !ending && fatalAutomaticResource(resource)) { refuse(Phase.PAGE, Reason.HTTP_ERROR); return }
             if (resource.url.host == AbemaApprovalBrowserPolicy.GATEWAY_HOST)
@@ -427,13 +437,24 @@ internal class AbemaApprovalBrowserRuntime(
         return abemaAutomaticReturnFatalResource(resource.isForMainFrame, resource.url.toString(),
             resource.method, trustedEmailPage, emailCandidate?.userId)
     }
+    private fun stallKind(resource: WebResourceRequest) = when {
+        resource.isForMainFrame -> AbemaRenewalStallRecord.Kind.MAIN
+        resource.url.host == AbemaApprovalBrowserPolicy.GATEWAY_HOST -> AbemaRenewalStallRecord.Kind.GATEWAY
+        resource.url.host in AbemaApprovalBrowserPolicy.REGION_HOSTS -> AbemaRenewalStallRecord.Kind.REGION
+        else -> AbemaRenewalStallRecord.Kind.OTHER
+    }
     private fun intercept(resource: WebResourceRequest): WebResourceResponse? {
         if (!allowed(resource)) {
             inspectResource("POLICY_REFUSED", resource)
+            stall.admission(stallKind(resource), AbemaRenewalStallRecord.Admission.POLICY_REFUSED)
             if (resource.url.host == AbemaApprovalBrowserPolicy.GATEWAY_HOST) Log.i(LOG_TAG, "GATEWAY_RESOURCE_REFUSED")
             return blocked()
         }
-        if (!currentOnWorker()) return blocked()
+        if (!currentOnWorker()) {
+            stall.admission(stallKind(resource), AbemaRenewalStallRecord.Admission.INACTIVE_REFUSED)
+            return blocked()
+        }
+        stall.admission(stallKind(resource), AbemaRenewalStallRecord.Admission.ADMITTED)
         if (resource.url.host == AbemaApprovalBrowserPolicy.GATEWAY_HOST)
             Log.i(LOG_TAG, "GATEWAY_RESOURCE_ADMITTED")
         if (resource.isForMainFrame) Log.i(LOG_TAG, "MAIN_FRAME_REQUEST_ADMITTED")
@@ -479,7 +500,9 @@ internal class AbemaApprovalBrowserRuntime(
         }
         Log.i(LOG_TAG, if (resource.url.host == AbemaApprovalBrowserPolicy.REGION_HOST)
             "REGION_RESOURCE_GLOBAL" else "REGION_RESOURCE_LINEAR")
-        val result = owned?.regionCheck?.check(origins.singleOrNull(), resource.url.toString())
+        stall.regionStarted()
+        val result = try { owned?.regionCheck?.check(origins.singleOrNull(), resource.url.toString()) }
+            finally { stall.regionEnded() }
         if (!currentOnWorker()) return blocked()
         return when (result) {
             is AbemaApprovalRegionResult.Reply -> {
@@ -518,12 +541,13 @@ internal class AbemaApprovalBrowserRuntime(
     // removes the pending callback with every other main-thread callback.
     private fun watchCommit() {
         if (commitWatched || committed || ending) return
-        val delay = abemaAutomaticCommitDelayMs(request.automaticReturn, SystemClock.elapsedRealtime(),
-            request.deadlineElapsedMs) ?: return
+        val armed = SystemClock.elapsedRealtime()
+        val delay = abemaAutomaticCommitDelayMs(request.automaticReturn, armed, request.deadlineElapsedMs) ?: return
         commitWatched = true
         main.postDelayed({
             if (ending || committed) return@postDelayed
             Log.i(LOG_TAG, "PAGE_COMMIT_TIMEOUT")
+            Log.i(LOG_TAG, "PAGE_COMMIT_STALL ${stall.logFields(armed + delay)}")
             refuse(Phase.PAGE, Reason.DEADLINE)
         }, delay)
     }

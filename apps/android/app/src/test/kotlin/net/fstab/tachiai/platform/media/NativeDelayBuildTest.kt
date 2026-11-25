@@ -64,7 +64,9 @@ class NativeDelayBuildTest {
         override fun close() {}
     }
 
-    private class Fixture(historyA: Long = 60_000, behindA: Long = 8_000, historyB: Long = 60_000, behindB: Long = 8_000) {
+    // By default each feed has 4 s of history behind it, less than the 5 s
+    // margin, so a build has none to use at once.
+    private class Fixture(historyA: Long = 12_000, behindA: Long = 8_000, historyB: Long = 12_000, behindB: Long = 8_000) {
         val clock = longArrayOf(1_700_000_000_000L)
         val a = Live(clock, historyA, behindA)
         val b = Live(clock, historyB, behindB)
@@ -86,6 +88,18 @@ class NativeDelayBuildTest {
         assertEquals("Building delay… 0:01", delayBuildLabel(1))
         assertEquals("Building delay… 0:00", delayBuildLabel(0))
         assertEquals("Building delay… 6:00", delayBuildLabel(360_000))
+        // Past the target after a reducing step, the need is negative.
+        assertEquals(-25_000L, nativeDelayBuildNeedMs(-5_000, 30_000, 0))
+        assertEquals(0L, nativeDelayBuildRemainingMs(-5_000, 30_000, 0))
+        // A jump back into recorded history counts as built.
+        assertEquals(43_000L, nativeDelayBuildRemainingMs(-90_000, 0, -47_000))
+        // What the recorded history covers at once: back to 5 s inside the
+        // oldest point, never the whole movement.
+        assertEquals(47_000L, nativeDelayBuildRecordedMs(52_000, -90_000))
+        assertEquals(0L, nativeDelayBuildRecordedMs(4_000, -90_000))
+        assertEquals(89_999L, nativeDelayBuildRecordedMs(200_000, -90_000))
+        assertEquals(0L, nativeDelayBuildRecordedMs(null, -90_000))
+        assertEquals(0L, nativeDelayBuildRecordedMs(52_000, 10_000))
     }
 
     @Test fun aBuildIsPlannedOnlyForARecordedHistoryShortfallWhilePlaying() {
@@ -94,8 +108,8 @@ class NativeDelayBuildTest {
         // Positive: A later relative to B, so B is held; negative holds A.
         assertEquals(NativeDelayBuildPlan(NativeDelayBuildOutcome.BUILD, B, -90_000, 90_000), nativeDelayBuildPlan(sa, sb, 90_000))
         assertEquals(NativeDelayBuildPlan(NativeDelayBuildOutcome.BUILD, A, -90_000, -90_000), nativeDelayBuildPlan(sa, sb, -90_000))
-        // B's 54 s of history behind it already covers 30 s.
-        assertEquals(NativeDelayBuildOutcome.NOT_NEEDED, nativeDelayBuildPlan(sa, sb, 30_000).outcome)
+        // B's 4 s of history behind it already covers 3 s.
+        assertEquals(NativeDelayBuildOutcome.NOT_NEEDED, nativeDelayBuildPlan(sa, sb, 3_000).outcome)
         val paused = sb.copy(playing = false, playWhenReady = false)
         assertEquals(NativeDelayBuildOutcome.NOT_PLAYING, nativeDelayBuildPlan(sa, paused, 90_000).outcome)
         assertEquals(NativeDelayBuildOutcome.UNAVAILABLE, nativeDelayBuildPlan(sa, sb.copy(playingAd = true), 90_000).outcome)
@@ -219,24 +233,134 @@ class NativeDelayBuildTest {
         assertTrue(fixture.b.seeks.size == 1 && !fixture.b.playing)
     }
 
-    @Test fun anotherTimingChangeCancelsRestoresAndPlaysOn() {
+    // Decision 5 asks for only the shortfall to be built (coordinator, 2026-11-25).
+    @Test fun theRecordedHistoryIsUsedAtOnceAndOnlyTheShortfallIsBuilt() {
+        // B has 52 s of history behind it: it jumps back 47 s, keeping 5 s
+        // inside its oldest point, and builds the other 43 s.
+        val fixture = Fixture(historyB = 60_000)
+        val before = fixture.relation()
+        assertEquals(NativeSeekOutcome.REQUESTED, fixture.pair.shiftRelative(90_000).outcome)
+        assertEquals(listOf(LIVE_SKIP_START_MARGIN_MS), fixture.b.seeks)
+        assertFalse(fixture.b.playing)
+        assertEquals(NativeDelayBuildState(B, 43_000, 90_000), fixture.pair.delayBuild)
+        fixture.pair.poll()
+        assertEquals(43_000L, fixture.pair.delayBuild?.remainingMs)
+        assertEquals("Building delay… 0:43", delayBuildLabel(checkNotNull(fixture.pair.delayBuild).remainingMs))
+        fixture.advance(43_100); fixture.pair.poll(); fixture.advance(100); fixture.pair.poll()
+        assertFalse(fixture.pair.busy)
+        assertEquals(NativeTimingSettlement(1, 90_000), fixture.pair.lastTimingSettlement)
+        assertEquals(before + 90_000, fixture.relation())
+        // Canceling such a build still restores the previous relationship.
+        val canceled = Fixture(historyB = 60_000)
+        val previous = canceled.relation()
+        canceled.pair.shiftRelative(90_000)
+        canceled.advance(10_000); canceled.pair.poll()
+        assertTrue(canceled.pair.pause())
+        assertEquals(previous, canceled.relation())
+        assertTrue(checkNotNull(canceled.pair.lastDelayBuildEnd).restored)
+    }
+
+    // User, 2026-11-25: same-direction steps add, opposite steps reduce.
+    @Test fun aTimingStepThatHoldsTheFeedFurtherBehindAddsToTheBuild() {
         val fixture = Fixture()
         val before = fixture.relation()
         fixture.pair.shiftRelative(90_000)
-        fixture.advance(40_000); fixture.pair.poll()
-        // A Timing step while building is refused as a nudge; the viewer
-        // routes it to cancel the build instead.
-        assertEquals(NativeSeekOutcome.UNAVAILABLE, fixture.pair.shiftRelative(10_000).outcome)
-        assertNotNull(fixture.pair.delayBuild)
-        val end = checkNotNull(fixture.pair.cancelDelayBuild())
-        assertTrue(end.canceled && end.restored)
-        assertEquals("$DELAY_BUILD_CANCELED; the offset is unchanged.", fixture.pair.status)
+        fixture.advance(10_000); fixture.pair.poll()
+        // A plain nudge is still refused while busy; steps adjust the build.
+        assertEquals(NativeSeekOutcome.UNAVAILABLE, fixture.pair.shiftRelative(5_000).outcome)
+        assertEquals(NativeDelayBuildAdjustment.ADDED, fixture.pair.adjustDelayBuild(5_000))
+        assertEquals(NativeDelayBuildState(B, 85_000, 95_000), fixture.pair.delayBuild)
+        assertEquals("Building delay for B: 1:25 to go.", fixture.pair.status)
+        assertEquals(NativeDelayBuildAdjustment.ADDED, fixture.pair.adjustDelayBuild(5_000))
+        assertEquals(90_000L, fixture.pair.delayBuild?.remainingMs)
+        fixture.advance(90_100); fixture.pair.poll(); fixture.advance(100); fixture.pair.poll()
         assertFalse(fixture.pair.busy)
-        assertTrue(fixture.a.playing && fixture.b.playing)
-        assertEquals(before, fixture.relation())
-        assertNull(fixture.pair.cancelDelayBuild())
-        // A fresh Timing change can then be made.
-        assertEquals(NativeSeekOutcome.REQUESTED, fixture.pair.shiftRelative(10_000).outcome)
+        assertEquals(NativeTimingSettlement(1, 100_000), fixture.pair.lastTimingSettlement)
+        assertEquals(100_000L, fixture.pair.requestedAdjustmentMs)
+        assertEquals(before + 100_000, fixture.relation())
+        assertEquals(NativeDelayBuildAdjustment.NOT_BUILDING, fixture.pair.adjustDelayBuild(5_000))
+    }
+
+    @Test fun aStepPastTheDelayLimitIsRefusedAndTheBuildContinues() {
+        val fixture = Fixture()
+        fixture.pair.shiftRelative(300_000)
+        // B is 2 s behind beyond its latency: 358 s of room in all.
+        assertEquals(NativeDelayBuildAdjustment.DELAY_LIMITED, fixture.pair.adjustDelayBuild(60_000))
+        assertEquals(LIVE_DELAY_LIMIT_MESSAGE, fixture.pair.status)
+        assertEquals(NativeDelayBuildState(B, 300_000, 300_000), fixture.pair.delayBuild)
+        assertEquals(NativeDelayBuildAdjustment.ADDED, fixture.pair.adjustDelayBuild(55_000))
+        assertEquals(355_000L, fixture.pair.delayBuild?.remainingMs)
+        assertTrue(fixture.pair.busy)
+    }
+
+    @Test fun anOppositeStepReducesTheBuildAndResumesAtZero() {
+        val fixture = Fixture()
+        val before = fixture.relation()
+        fixture.pair.shiftRelative(90_000)
+        fixture.advance(10_000); fixture.pair.poll()
+        assertEquals(NativeDelayBuildAdjustment.REDUCED, fixture.pair.adjustDelayBuild(-5_000))
+        assertEquals(NativeDelayBuildState(B, 75_000, 85_000), fixture.pair.delayBuild)
+        assertEquals("Building delay for B: 1:15 to go.", fixture.pair.status)
+        // Reducing to exactly what has been built resumes as if complete.
+        assertEquals(NativeDelayBuildAdjustment.REDUCED, fixture.pair.adjustDelayBuild(-75_000))
+        assertTrue(fixture.b.playing)
+        assertEquals(1, fixture.b.seeks.size) // The resume seek resets the live target.
+        fixture.advance(100); fixture.pair.poll()
+        assertFalse(fixture.pair.busy)
+        assertEquals(NativeTimingSettlement(1, 10_000), fixture.pair.lastTimingSettlement)
+        // The resume seek is never to the very frame it is on (1 ms on).
+        assertTrue(kotlin.math.abs(before + 10_000 - fixture.relation()) <= 1)
+        assertTrue(checkNotNull(fixture.pair.lastDelayBuildEnd).completed)
+    }
+
+    @Test fun reducingPastWhatIsBuiltAppliesTheNetChange() {
+        val fixture = Fixture()
+        val before = fixture.relation()
+        fixture.pair.shiftRelative(90_000)
+        val frozen = checkNotNull(fixture.b.timingSnapshot().positionMs)
+        fixture.advance(30_000); fixture.pair.poll()
+        // 30 s is built but only 5 s is now wanted: B moves forward 25 s and plays.
+        assertEquals(NativeDelayBuildAdjustment.REDUCED, fixture.pair.adjustDelayBuild(-85_000))
+        assertEquals(listOf(frozen + 25_000), fixture.b.seeks)
+        assertTrue(fixture.b.playing)
+        fixture.advance(100); fixture.pair.poll()
+        assertFalse(fixture.pair.busy)
+        assertEquals(NativeTimingSettlement(1, 5_000), fixture.pair.lastTimingSettlement)
+        assertEquals(before + 5_000, fixture.relation())
+
+        // Past the other way, with A held further ahead than its window allows:
+        // refused, and the build goes on unchanged.
+        val far = Fixture()
+        far.pair.shiftRelative(90_000)
+        assertEquals(NativeDelayBuildAdjustment.UNAVAILABLE, far.pair.adjustDelayBuild(-200_000))
+        assertEquals("B can't move that far forward; the delay is still building.", far.pair.status)
+        assertEquals(NativeDelayBuildState(B, 90_000, 90_000), far.pair.delayBuild)
+        assertTrue(far.b.seeks.isEmpty())
+    }
+
+    @Test fun theSessionFollowsAdjustmentsAndSavesTheNetChange() {
+        val token = Any()
+        val manual = PairOffsetSession(PairOffsetPreference(20_000, true)); manual.bind(token, initialAppliedMs = 20_000)
+        val command = checkNotNull(manual.planManual(token, 90_000, 0))
+        manual.dispatched(command, NativeSeekOutcome.REQUESTED)
+        assertTrue(manual.adjustPending(token, 5_000))
+        assertTrue(manual.adjustPending(token, -15_000))
+        assertFalse(manual.adjustPending(Any(), 5_000))
+        manual.observe(token, 1, 80_000, busy = false)
+        assertTrue(manual.state.saving) // Applied; now saving.
+        assertEquals(100_000L, manual.state.appliedOffsetMs)
+        assertEquals(100_000L, manual.pendingSave?.preference?.offsetMs)
+
+        // A saved-offset restore adjusted by a step becomes a saved manual change.
+        val restore = PairOffsetSession(PairOffsetPreference(90_000, true)); restore.bind(token)
+        val startup = checkNotNull(restore.planStartup(token, 0))
+        restore.dispatched(startup, NativeSeekOutcome.REQUESTED)
+        assertTrue(restore.adjustPending(token, 10_000))
+        restore.observe(token, 1, 100_000, busy = false)
+        assertEquals(100_000L, restore.state.appliedOffsetMs)
+        assertEquals(100_000L, restore.pendingSave?.preference?.offsetMs)
+        // Nothing pending: nothing to adjust.
+        assertFalse(restore.adjustPending(token, 5_000))
     }
 
     @Test fun aSkipCancelsWithOneSeekThatRestoresAndMovesTheHeldFeed() {
@@ -278,14 +402,16 @@ class NativeDelayBuildTest {
         // A 58 s and B 38 s behind their live points; B has 30 s of history.
         val fixture = Fixture(historyA = 120_000, behindA = 66_000, historyB = 76_000, behindB = 46_000)
         val before = fixture.relation()
+        val original = checkNotNull(fixture.b.timingSnapshot().positionMs)
         assertEquals(NativeSeekOutcome.REQUESTED, fixture.pair.shiftRelative(90_000).outcome)
-        val frozen = checkNotNull(fixture.b.timingSnapshot().positionMs)
+        // B first used 25 of its 30 s of history.
+        assertEquals(listOf(original - 25_000), fixture.b.seeks)
         fixture.advance(30_000); fixture.pair.poll()
         val plan = fixture.pair.goLive()
         assertEquals(NativeSeekOutcome.REQUESTED, plan.outcome)
         assertTrue(plan.keepsOffset)
         assertEquals(B, plan.limitedBy) // B's restored position is the nearer to live.
-        assertEquals(listOf(frozen + 30_000 + plan.movementMs), fixture.b.seeks)
+        assertEquals(listOf(original - 25_000, original + 30_000 + plan.movementMs), fixture.b.seeks)
         fixture.pair.poll()
         assertFalse(fixture.pair.busy)
         assertTrue(fixture.a.playing && fixture.b.playing)

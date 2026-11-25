@@ -143,8 +143,6 @@ internal class NativePairViewer(
     private val scrubPreviews: ViewerScrubPreviews? = null,
     // A feed's Translate text in video inputs (#664); null leaves the feature out.
     private val frameText: ((NativeMixedSide) -> FrameTextFeed?)? = null,
-    // A Timing press while a delay builds cancels it (#618).
-    private val onCancelDelayBuild: () -> Unit = { pair()?.cancelDelayBuild() },
     selectedSlots: Set<NativeMixedSide> = NativeMixedSide.entries.toSet(),
 ) : FrameLayout(context) {
     // Feed labels may change once a provider title's translation is ready (#643).
@@ -560,7 +558,8 @@ internal class NativePairViewer(
         return targets.getValue(side).copy(anyLive = anyLive)
     }
     // While a delay builds (#618) the pair is busy, but Pause, Back to live,
-    // Live, a skip or a Timing step cancels the build instead of waiting.
+    // Live or a skip cancels the build instead of waiting, and a Timing step
+    // adjusts it.
     private fun delayBuilding() = pair()?.delayBuild != null
     private fun adjustmentBusy() = playbackBusy() && !delayBuilding()
     // A skip settles while this viewer's pair skip holds both feeds, and until
@@ -861,10 +860,25 @@ internal class NativePairViewer(
     private fun row(vararg views: View) = LinearLayout(context).apply {
         views.forEach { addView(it, LinearLayout.LayoutParams(0, -2, 1f)) }
     }
+    // adds: null when no delay builds; otherwise whether this row's steps add
+    // to the build (hold its feed further behind) or reduce it (#618).
+    private fun refreshTimingStep(control: View, ready: Boolean, busy: Boolean, adds: Boolean?) {
+        control.isEnabled = ready
+        control.alpha = if (ready && busy) 0.5f else 1f
+        ViewCompat.setStateDescription(control, when {
+            ready && adds == true -> TIMING_ADDS_TO_BUILD
+            ready && adds == false -> TIMING_REDUCES_BUILD
+            ready && busy -> TIMING_BUSY
+            else -> null
+        })
+    }
     private fun timingButtons(forA: Boolean) = ViewerTimingStep.entries.map { choice ->
         button(choice.label, "advance:${if (forA) "A" else "B"}:${choice.milliseconds}") {
             if (!hasPairSlots || panel != "Timing") return@button
-            if (delayBuilding()) { onCancelDelayBuild(); refresh(); return@button }
+            // While a delay builds, a step adds to or reduces it (#618).
+            if (delayBuilding()) {
+                onRelative(if (forA) choice.milliseconds else -choice.milliseconds); refresh(); return@button
+            }
             if (pair()?.busy != false || playbackBusy()) return@button
             pendingMarkAlignment = null
             markAlignmentMessage = null
@@ -1428,18 +1442,12 @@ internal class NativePairViewer(
         // next Select acted on it (for example Back to sources). The step's
         // handler ignores presses until the adjustment completes.
         val timingReady = hasPairSlots && current != null
-        // A building delay's steps cancel it, so they are not shown as busy.
-        val building = current?.delayBuild != null
-        val timingBusy = !building && (current?.busy != false || playbackBusy())
-        (advanceA + advanceB).forEach { control ->
-            control.isEnabled = timingReady
-            control.alpha = if (timingReady && timingBusy) 0.5f else 1f
-            ViewCompat.setStateDescription(control, when {
-                timingReady && building -> TIMING_CANCELS_BUILD
-                timingReady && timingBusy -> TIMING_BUSY
-                else -> null
-            })
-        }
+        // A building delay's steps adjust it, so they are not shown as busy.
+        // Advance A holds B further behind; Advance B holds A further behind.
+        val building = current?.delayBuild
+        val timingBusy = building == null && (current?.busy != false || playbackBusy())
+        advanceA.forEach { control -> refreshTimingStep(control, timingReady, timingBusy, building?.let { it.side == NativeMixedSide.B }) }
+        advanceB.forEach { control -> refreshTimingStep(control, timingReady, timingBusy, building?.let { it.side == NativeMixedSide.A }) }
         val sa = runCatching { current?.a?.timingSnapshot() }.getOrNull()
         val sb = runCatching { current?.b?.timingSnapshot() }.getOrNull()
         val ta = runCatching { current?.a?.timelineEvidence() }.getOrNull()
@@ -1963,8 +1971,9 @@ private const val OVERLAY_TEXT = 0xFFE8ECEE.toInt()
 
 // State description of a timing step while an adjustment is in progress.
 internal const val TIMING_BUSY = "Adjustment in progress"
-// State description of a timing step while a delay builds (#618).
-internal const val TIMING_CANCELS_BUILD = "Building delay; activate to cancel"
+// State descriptions of a timing step while a delay builds (#618).
+internal const val TIMING_ADDS_TO_BUILD = "Building delay; adds to the delay"
+internal const val TIMING_REDUCES_BUILD = "Building delay; reduces the delay"
 // A skip's settling (a pair hold, or a feed buffering at its new position)
 // stops queuing further presses after this long, like the pair hold.
 private const val SKIP_SETTLE_LIMIT_MS = 8_000L

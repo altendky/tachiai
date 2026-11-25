@@ -2,11 +2,11 @@ package net.fstab.tachiai.platform.media
 
 // Building delay (#618, user decision 5 of 2026-11-25). A Timing change or a
 // saved-offset restore that needs a live feed further behind live than its
-// recorded history reaches, but within the delay limit, holds that feed on
-// its frame while the other feed and its audio keep playing. The held feed's
-// rewind buffer grows while it is held (#697), so once the other feed has
-// played on by the requested amount the held feed is exactly where it needs
-// to be, and it resumes there.
+// recorded history reaches, but within the delay limit, first moves that feed
+// back as far as its history allows, then holds it on that frame while the
+// other feed and its audio keep playing. The held feed's rewind buffer grows
+// while it is held (#697), so once the other feed has played on by the
+// shortfall the held feed is exactly where it needs to be, and it resumes.
 
 internal enum class NativeDelayBuildOutcome {
     // Hold `side` until the other feed has played on by -movementMs.
@@ -54,15 +54,33 @@ internal fun nativeDelayBuildPlan(a: NativeTimingSnapshot?, b: NativeTimingSnaps
     return NativeDelayBuildPlan(NativeDelayBuildOutcome.BUILD, side, movement, deltaMs)
 }
 
-// How much longer the held feed waits, from the live snapshots: the requested
-// movement less how far the other feed has played on relative to the held
-// one since the hold began. It falls by about a second per second while the
-// other feed plays and pauses while that feed buffers.
-internal fun nativeDelayBuildRemainingMs(movementMs: Long, peerAdvanceMs: Long, heldAdvanceMs: Long): Long {
+// How far back the feed to delay moves at once, using the history it already
+// has: back to LIVE_SKIP_START_MARGIN_MS inside its oldest recorded point, and
+// never the whole movement (that would be an ordinary shift).
+internal fun nativeDelayBuildRecordedMs(positionMs: Long?, movementMs: Long): Long {
+    if (positionMs == null || movementMs >= 0 || movementMs == Long.MIN_VALUE) return 0
+    return (positionMs - LIVE_SKIP_START_MARGIN_MS).coerceIn(0, -movementMs - 1)
+}
+
+// How much further back the held feed still has to go, from the live
+// snapshots: the requested movement less how far the other feed has played on
+// relative to the held one since the build began (a jump back into recorded
+// history counts as built). Negative once past the target, as after a Timing
+// step that reduced the build.
+internal fun nativeDelayBuildNeedMs(movementMs: Long, peerAdvanceMs: Long, heldAdvanceMs: Long): Long {
     val built = try { Math.subtractExact(peerAdvanceMs, heldAdvanceMs) } catch (_: ArithmeticException) { return 0 }
     val wanted = if (movementMs == Long.MIN_VALUE) Long.MAX_VALUE else -movementMs
-    return try { Math.subtractExact(wanted, built) } catch (_: ArithmeticException) { 0 }.coerceAtLeast(0)
+    return try { Math.subtractExact(wanted, built) } catch (_: ArithmeticException) { 0 }
 }
+
+// The countdown: what is still needed, never below zero. It falls by about a
+// second per second while the other feed plays and pauses while that feed
+// buffers.
+internal fun nativeDelayBuildRemainingMs(movementMs: Long, peerAdvanceMs: Long, heldAdvanceMs: Long): Long =
+    nativeDelayBuildNeedMs(movementMs, peerAdvanceMs, heldAdvanceMs).coerceAtLeast(0)
+
+// A Timing step while a delay builds (user, 2026-11-25).
+internal enum class NativeDelayBuildAdjustment { ADDED, REDUCED, DELAY_LIMITED, UNAVAILABLE, NOT_BUILDING }
 
 // Beyond the requested amount, how long the other feed may stall (buffering,
 // advertisements) before the build gives up.
@@ -86,9 +104,11 @@ internal data class NativeDelayBuildEnd(val side: NativeMixedSide, val completed
 internal const val DELAY_BUILD_CANCELED = "Building delay canceled"
 internal const val DELAY_BUILD_NEEDS_PLAYBACK = "That needs more recorded history; a delay builds only while both feeds play."
 
-// "Building delay… 1:30", whole seconds rounded up so it reaches 0:00 only
-// as the feed resumes.
-internal fun delayBuildLabel(remainingMs: Long): String {
+// "1:30", whole seconds rounded up so it reaches 0:00 only as the feed resumes.
+internal fun formatDelayBuildRemaining(remainingMs: Long): String {
     val seconds = (remainingMs.coerceAtLeast(0) + 999) / 1_000
-    return "Building delay… ${seconds / 60}:${(seconds % 60).toString().padStart(2, '0')}"
+    return "${seconds / 60}:${(seconds % 60).toString().padStart(2, '0')}"
 }
+
+// "Building delay… 1:30"
+internal fun delayBuildLabel(remainingMs: Long): String = "Building delay… ${formatDelayBuildRemaining(remainingMs)}"

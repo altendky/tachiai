@@ -1267,24 +1267,45 @@ implemented as follows and is not yet validated on a device:
   the 6:00 limit. Past the limit it is still refused with "Delay is limited to
   6:00". A request that the recorded history already covers moves the feed at
   once, as before.
-- **Hold.** Instead of refusing, the feed to delay freezes on its frame. Its
-  pane shows "Building delay… 1:30", counting down the seconds still needed.
-  The other feed and its audio keep playing. The count comes from the two
-  feeds' own clocks, not a timer, so it pauses while the other feed buffers or
-  plays an advertisement. The held feed's rewind buffer grows while it is held,
-  so the frame it froze on stays recorded.
-- **Resume.** Once the other feed has played on by the requested amount, the
-  held feed resumes on its own, where it froze. It resumes with a seek to that
-  point, so Media3's live speed control keeps the new delay instead of
-  speeding up to recover it. The offset counts as applied only then, and a new
-  Timing change is saved only then.
-- **Cancel.** Pause, Back to live, Live, a skip, or another Timing step cancels
-  the build, and a brief notice says "Building delay canceled". Pause, a Timing
-  step, a skip and Live first return the held feed to where it would have been
-  without the build, so the pair's offset is unchanged. A skip or Live then
-  moves both feeds as usual. Back to live ends the offset anyway, so the held
-  feed just plays on. A Timing step while building only cancels; press it
-  again to make a new change.
+- **Use what is recorded.** Instead of refusing, the feed to delay first jumps
+  back as far as its recorded history allows, to 5 s inside its oldest point,
+  like a skip back. Only the shortfall is built: 90 s requested with 60 s
+  recorded jumps back 55 s and builds 35 s.
+- **Hold.** The feed then freezes on that frame. Its pane shows "Building
+  delay… 0:35", counting down the seconds still needed. The other feed and its
+  audio keep playing. The count comes from the two feeds' own clocks, not a
+  timer, so it pauses while the other feed buffers or plays an advertisement.
+  The held feed's rewind buffer grows while it is held, so the frame it froze
+  on stays recorded.
+- **Resume.** Once the other feed has played on by the shortfall, the held feed
+  resumes on its own, where it froze. It resumes with a seek to that point, so
+  Media3's live speed control keeps the new delay instead of speeding up to
+  recover it. The offset counts as applied only then, and a new Timing change
+  is saved only then.
+- **Timing steps while building** (user, 2026-11-25: same-direction steps add,
+  opposite steps reduce). This replaces the first version, in which any Timing
+  step canceled the build.
+  - A step that holds the feed further behind adds to the build, and the count
+    grows by the step: "Building delay for B: 0:10 to go." A step past the 6:00
+    limit is refused with "Delay is limited to 6:00", and the build continues.
+  - An opposite step reduces what is left to build. At zero the feed resumes as
+    if the build had completed at that amount.
+  - Reduced below zero, the feed resumes at once at the net requested offset:
+    it moves forward from its frozen frame by the excess, and that net change is
+    applied and saved as one change. A step that would need the feed past its
+    live point is refused, and the build continues.
+  - Advance A adds to a build holding B, and Advance B to one holding A. While
+    building, TalkBack describes each step as "Building delay; adds to the
+    delay" or "Building delay; reduces the delay".
+  - Mark is unavailable while building, as during any timing adjustment. A
+    saved-offset restore and the offset toggle only start while the pair is
+    idle, so neither can arrive during a build.
+- **Cancel.** Pause, Back to live, Live or a skip cancels the build, and a brief
+  notice says "Building delay canceled". Pause, a skip and Live first return
+  the held feed to where it would have been without the build, including the
+  history it jumped back into, so the pair's offset is unchanged. A skip or
+  Live then moves both feeds as usual. Back to live ends the offset anyway, so
+  the held feed just plays on.
 - **Only while playing.** A paused pair can't build a delay. The request is
   refused with "That needs more recorded history; a delay builds only while
   both feeds play."

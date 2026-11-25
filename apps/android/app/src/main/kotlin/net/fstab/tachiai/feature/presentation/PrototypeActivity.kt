@@ -52,6 +52,7 @@ import net.fstab.tachiai.presentation.replayPositionKeys
 import net.fstab.tachiai.presentation.replayResumeNotice
 import net.fstab.tachiai.presentation.replayResumeTargetMs
 import net.fstab.tachiai.platform.media.NativeMixedPair
+import net.fstab.tachiai.platform.media.NativeDelayBuildAdjustment
 import net.fstab.tachiai.platform.media.NativeDelayBuildEnd
 import net.fstab.tachiai.platform.media.NativePendingSeekDiagnostic
 import net.fstab.tachiai.platform.diagnostics.TimingFailureKind
@@ -1214,7 +1215,6 @@ open class PrototypeActivity : ComponentActivity() {
             onSkip = ::requestSkip,
             onLive = ::requestLive,
             onStartOver = ::requestStartOver,
-            onCancelDelayBuild = ::cancelDelayBuild,
             scrubPreviews = ScrubPreviewLoader(sources = { side -> scrubPreviewSource(side.ordinal) }),
             frameText = { side -> selection?.slots?.getOrNull(side.ordinal)?.let { feed ->
                 // Native feeds decode into the PlayerView's TextureView: Twitch and
@@ -1404,6 +1404,7 @@ open class PrototypeActivity : ComponentActivity() {
 
     private fun requestTimingAdjustment(delta: Long, marked: Boolean,
         correspondence: PairOffsetCorrespondence? = null): NativeSeekPlan {
+        if (!marked && playback?.pair?.delayBuild != null) return adjustDelayBuild(delta)
         if (pairOffsetLoading || pairOffsetSession?.state?.busy == true)
             return NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE)
         processPairOffset(allowStartup = false)
@@ -1463,12 +1464,23 @@ open class PrototypeActivity : ComponentActivity() {
         pairOffsetSession?.delayBuildEnded(pair, end.restored, end.message)
     }
 
-    // Another Timing change cancels a building delay (#618).
-    private fun cancelDelayBuild() {
-        val pair = playback?.pair ?: return
-        pair.cancelDelayBuild() ?: return
+    // A Timing step while a delay builds adjusts the build (#618; user,
+    // 2026-11-25): one that holds the feed further behind adds to it, an
+    // opposite one reduces it. The pending offset command follows, so the
+    // net change is what is applied and saved on resume.
+    private fun adjustDelayBuild(delta: Long): NativeSeekPlan {
+        val pair = playback?.pair ?: return NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE)
+        val session = pairOffsetSession
+        if (session != null && !session.adjustPending(pair, delta)) return NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE)
+        val result = pair.adjustDelayBuild(delta)
+        val adjusted = result == NativeDelayBuildAdjustment.ADDED || result == NativeDelayBuildAdjustment.REDUCED
+        // A refused step leaves the build and its command as they were.
+        if (!adjusted) session?.adjustPending(pair, -delta)
+        Log.d("TachiaiPrototype", "timing=DELAY_BUILD_ADJUST deltaMs=$delta outcome=$result " +
+            "totalMs=${pair.delayBuild?.totalMs} remainingMs=${pair.delayBuild?.remainingMs}")
         syncDelayBuild()
         viewer?.refresh()
+        return NativeSeekPlan(if (adjusted) NativeSeekOutcome.REQUESTED else NativeSeekOutcome.UNAVAILABLE)
     }
 
     private fun loadPairOffset(selected: ConfiguredPlaybackSelection, run: Long) {

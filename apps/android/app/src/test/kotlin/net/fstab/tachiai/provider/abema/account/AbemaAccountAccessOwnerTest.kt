@@ -32,6 +32,8 @@ class AbemaAccountAccessOwnerTest {
         var closeAction: () -> Unit = {}
         var cleanupAction: () -> Unit = {}
         var profileAction: () -> Unit = {}
+        val marks = java.util.Collections.synchronizedList(mutableListOf<String>())
+        @Volatile var routeRefusal: Any? = null
         val owner: AbemaAccountAccessOwner
         fun awaitCleanup() {
             val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3)
@@ -51,7 +53,7 @@ class AbemaAccountAccessOwnerTest {
                     override fun token(challenge: AbemaAccountChallenge): AbemaAccountTokenResult = error("NO TOKEN EXCHANGE")
                     override fun cancelActiveRequest() { cancels.incrementAndGet() }
                     override fun close() { closes.incrementAndGet(); closeAction(); if (closeThrows) error("PRIVATE CLOSE ERROR") }
-                } }, { cleanupAction(); cleanup })
+                } }, { cleanupAction(); cleanup }, mark = { marks += it }, routeRefusal = { routeRefusal })
         }
     }
     @Test fun sameRecordProofIsSharedUntilLastForegroundAttachmentClosesWithoutWrites() {
@@ -424,5 +426,73 @@ class AbemaAccountAccessOwnerTest {
             assertTrue(fresh.current()); release.countDown()
             assertFalse(checking.get(3, TimeUnit.SECONDS)); assertTrue(fresh.current()); assertTrue(fresh.checkWorker())
         } finally { release.countDown(); first.close(); second?.close(); executor.shutdownNow() }
+    }
+    // #729: a playing feed's recovery acquired while a renewal was adopted.
+    @Test fun aSameAccountRenewalDuringValidationValidatesTheRenewedRecordInsteadOfFailing() {
+        val f = Fixture()
+        val renewed = decodedAbemaGrant(fixtureAccountToken("intended-account", "3000"), "intended-account", f.wall)
+        f.profileAction = { if (f.profiles.get() == 1) f.store.replace(renewed, f.wall, f.store.revision()) { true } }
+        val attachment = f.owner.attach()
+        val lease = (attachment.acquire() as AbemaAccountAccessResult.Account).lease
+        assertEquals(renewed.bearer, lease.grant!!.bearer); assertEquals(3_000_000L, lease.expiresAtMs())
+        assertEquals(2, f.profiles.get()); assertEquals(1, f.emails.get())
+        assertTrue(lease.current()); assertTrue(lease.checkWorker())
+        assertTrue("VALIDATION_RENEWED" in f.marks)
+        attachment.close(); f.awaitCleanup()
+    }
+    @Test fun onlyADirectSameAccountRenewalDuringValidationIsRetriedAndOnlyOnce() {
+        for (change in 0..3) {
+            val f = Fixture()
+            fun replace(user: String, expiry: String) = f.store.replaceSnapshot(
+                decodedAbemaGrant(fixtureAccountToken(user, expiry), user, f.wall), f.wall, f.store.revision()) { true }
+            f.profileAction = { when (change) {
+                0 -> if (f.profiles.get() == 1) replace("different-account", "3000")
+                1 -> if (f.profiles.get() == 1) f.store.rollbackPublished(replace("intended-account", "3000"))
+                2 -> if (f.profiles.get() == 1) { replace("intended-account", "3000"); f.store.invalidateForget() }
+                // Every validation sees another renewal: one retry, then the failure stands.
+                else -> replace("intended-account", (3000 + f.profiles.get()).toString())
+            } }
+            val attachment = f.owner.attach()
+            val result = attachment.acquire() as AbemaAccountAccessResult.Failed
+            assertEquals(AbemaAccountFailure.CANCELLED, result.category)
+            assertEquals(if (change == 3) 2 else 1, f.profiles.get()); assertEquals(0, f.emails.get())
+            assertEquals(change == 3, "VALIDATION_RENEWED" in f.marks)
+            attachment.close(); f.awaitCleanup()
+        }
+    }
+    @Test fun aLostSharedProofNamesItsClosedCause() {
+        val expected = listOf("GRANT_EXPIRED", "CLOCK_ROLLBACK", "STORE_CHANGED store=FORGET", "STORE_CHANGED store=REPLACED",
+            "DURABLE_OWNER_MISMATCH route=NONE", "DURABLE_OWNER_MISMATCH route=READ_FAILED",
+            "DURABLE_READ_FAILED store=STORAGE_FAILED", "OWNER_RETIRED route=POOL_CHANGED", "OWNER_CLOSED")
+        for ((loss, cause) in expected.withIndex()) {
+            val f = Fixture(); val attachment = f.owner.attach(); val peer = f.owner.attach()
+            val lease = (attachment.acquire() as AbemaAccountAccessResult.Account).lease
+            when (loss) {
+                0 -> f.wall = 2000000
+                1 -> f.wall--
+                2 -> f.store.invalidateForget()
+                3 -> f.store.replace(decodedAbemaGrant(fixtureAccountToken("replacement"), "replacement", f.wall), f.wall, f.store.revision()) { true }
+                4 -> f.ownerCurrent = false
+                5 -> { f.ownerCurrent = false; f.routeRefusal = net.fstab.tachiai.platform.network.ProviderRouteRefusal.READ_FAILED }
+                6 -> f.storage.readHook = { error("PRIVATE STORAGE ERROR") }
+                7 -> { f.routeRefusal = net.fstab.tachiai.platform.network.ProviderRouteRefusal.POOL_CHANGED; f.owner.retire() }
+                8 -> f.owner.close()
+            }
+            assertFalse(lease.checkWorker()); assertFalse(lease.current())
+            assertEquals(listOf("PROOF_REVOKED cause=$cause attachments=2"), f.marks.filter { it.startsWith("PROOF_REVOKED") })
+            peer.close(); attachment.close()
+            // Detaching the last consumer is ordinary teardown, not a lost proof.
+            assertEquals(1, f.marks.count { it.startsWith("PROOF_REVOKED") })
+            f.storage.readHook = {}
+        }
+    }
+    @Test fun aLostProofMarkerCarriesOnlyClosedTokens() {
+        val f = Fixture(); val attachment = f.owner.attach()
+        assertTrue(attachment.acquire() is AbemaAccountAccessResult.Account)
+        f.routeRefusal = "not a closed token: https://example.test/?token=secret"
+        f.owner.retire()
+        assertEquals(listOf("PROOF_REVOKED cause=OWNER_RETIRED route=NONE attachments=1"),
+            f.marks.filter { it.startsWith("PROOF_REVOKED") })
+        attachment.close()
     }
 }

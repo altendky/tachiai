@@ -707,6 +707,84 @@ attempts per incident, six in ten minutes, then Retry. TLS or cancellation
 evidence, and HTTP rejections other than 404, 408, 429 and 5xx, refuse it at
 any age.
 
+## ABEMA account lease loss during playback — 2026-11-26
+
+A playing ABEMA feed on the `tachiai-dev` emulator failed with
+`ABEMA_ACCOUNT_UNAVAILABLE` beside a sibling feed's startup, during account
+renewals, and once at grant adoption with `autoRecovery=SKIPPED`
+([#729](https://github.com/altendky/tachiai/issues/729)). These are emulator
+observations only.
+
+`ROUTE_CHALLENGED purpose=PLAYBACK` is not a refusal of a valid lease. It is
+the ordinary 407 answer to a CONNECT that carries no credentials. It is
+reported once per refusal window, which in practice marks the first connection
+of a new playback route. During a playing feed the only producer of
+`ABEMA_ACCOUNT_UNAVAILABLE` is the cached session's account check. That check
+fails when the account client in the viewer process stops being current.
+
+Source analysis found one concrete race. A renewal adopted while a consumer's
+account acquisition was still validating the previous saved record cancelled
+that validation, and the consumer failed. A feed's automatic retry after a
+first failure hits this when it starts just before adoption. Its second
+account failure in the same incident then gets `SKIPPED`, because each
+incident allows one account refresh, reset only by 60 s of healthy playback.
+Now, when the store has directly replaced that record with a later grant for
+the same account, the acquisition validates the renewed record once within its
+original deadline. It still checks the profile and email registration. Another
+account, a rollback, Forget, or a second renewal during the retry still fails
+closed.
+
+The first loss in each incident is still unexplained. Closed lines under
+`TachiaiAbemaAccount` now name it on the next occurrence:
+
+- `client=LEASE_LOST cause=… playback=… continuous=… acquired=… ageMs=…`,
+  logged in the viewer process when an acquired lease stops. Causes are
+  `SERVICE_REVOKED`, `SERVICE_CLOSED`, `CHECK_REFUSED`, `REPLY_TIMEOUT`,
+  `SEND_FAILED`, `BINDER_DIED`, `SERVICE_DISCONNECTED`, `BINDING_DIED`,
+  `SESSION_EXPIRED`, `SCOPE_LOST`, `CLOCK_ROLLBACK`, `GRANT_EXPIRED` and
+  `POISONED`.
+- `service=LEASE_REVOKED` and `service=CHECK_REFUSED`, logged in the main
+  process with the same fields. Causes are `ENDED`, `SESSION_EXPIRED`,
+  `LEASE_LOST`, `BUSY`, `TIME_LIMIT` and `DURABLE_REFUSED`.
+- `owner=PROOF_REVOKED cause=… attachments=…`, logged when the shared account
+  proof that every playing feed leases is dropped. `attachments` counts its
+  consumers. Causes are `GRANT_EXPIRED`, `CLOCK_ROLLBACK`,
+  `STORE_CHANGED store=…`, `DURABLE_OWNER_MISMATCH route=…`,
+  `DURABLE_READ_FAILED store=…`, `DURABLE_STORE_MISMATCH`,
+  `DURABLE_PROOF_LOST`, `DURABLE_OWNER_CHECK_FAILED`, `OWNER_RETIRED route=…`, `OWNER_CLOSED` and
+  `INVALIDATED`.
+  - `store` names the latest account-store change: `REPLACED`, `ROLLED_BACK`,
+    `FORGET`, `FORGET_PENDING` or `STORAGE_FAILED`.
+  - `route` names why the owner's route binding first refused:
+    `POOL_CHANGED`, `READ_FAILED`, `OWNER_CHANGED` or `INVALID_PROOF`. `NONE`
+    means the binding itself was not refused, for example a poisoned instance.
+  - Detaching the last consumer is ordinary teardown and logs nothing.
+- `owner=VALIDATION_RENEWED`, logged when an acquisition follows a renewal
+  published during its validation.
+- `accountRefused selection=… route=… budget=… active=… deadline=…` under
+  `TachiaiCachedAbema`, logged once per session when its account check fails.
+  It shows which part of the session's own scope had lapsed.
+
+None of these lines contains an account, route, host, token or response value.
+No admission, entitlement or route check is relaxed. The candidates for the
+first loss, in order:
+
+1. A transient protected read in the main process (account store or route
+   registry) during a durable check. This is treated as a revocation of the
+   shared proof (`DURABLE_READ_FAILED`, `DURABLE_OWNER_MISMATCH route=READ_FAILED`
+   or `OWNER_RETIRED route=READ_FAILED`). Renewal and a sibling feed's startup
+   both add concurrent reads of these stores.
+2. A durable check that misses the 5 s reply deadline under that same load
+   (`REPLY_TIMEOUT`, or `CHECK_REFUSED` with `TIME_LIMIT`).
+3. A wall-clock step on the emulator (`CLOCK_ROLLBACK`).
+
+The adoption-time failure points to an owner-level loss rather than a
+client-only one: the retry had no cached proof to reuse.
+
+Capture `TachiaiAbemaAccount`, `TachiaiCachedAbema`, `TachiaiPrototype`,
+`TachiaiAbemaRenewal` and `TachiaiRouteEngine` together for the next
+reproduction.
+
 ## Collecting one device's evidence
 
 Verify the requested device before collecting. For the persistent emulator,

@@ -323,8 +323,16 @@ internal class CachedPrototypeAbemaSession(
     private fun rememberContinuationRefusal(refusal: AbemaBootstrapRefusal,
         reason: PrototypeFailureReason = refusal.failureReason(budget?.isTimeBounded == true)) {
         if (closed.get() || refusal in setOf(AbemaBootstrapRefusal.CLOSED, AbemaBootstrapRefusal.SUPERSEDED)) return
-        if (continuationRefusalReported.compareAndSet(false, true))
+        if (continuationRefusalReported.compareAndSet(false, true)) {
             reportBootstrapRefusal(FailureStage.CACHED_ABEMA_SOURCE_PREPARE, refusal)
+            // Which part of the account lease's scope lapsed (#729), as closed
+            // flags; the account client separately names a revoked lease.
+            if (refusal == AbemaBootstrapRefusal.ACCOUNT) runCatching {
+                record("accountRefused selection=${ownership?.canContinue() != false} route=${routeCurrent.get()} " +
+                    "budget=${budget?.active == true} active=${active()} " +
+                    "deadline=${SystemClock.elapsedRealtime() < deadline}")
+            }
+        }
         firstFailure.rememberTerminalFailure(PrototypeFeedFailure(reason),
             fromInactivePlayerBudget = refusal == AbemaBootstrapRefusal.BUDGET_INACTIVE)
     }

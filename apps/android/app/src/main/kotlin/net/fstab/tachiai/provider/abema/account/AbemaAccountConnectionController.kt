@@ -14,6 +14,8 @@ internal interface AbemaAccountConnectionBinding {
     val store: AbemaAccountGrantStore
     // Memory-only configuration admission, independent of foreground/cleanup.
     val routeCurrent: Boolean get() = true
+    // Closed first cause of a lost route admission (#729), for diagnostics only.
+    val routeRefusal: net.fstab.tachiai.platform.network.ProviderRouteRefusal? get() = null
     fun owner(): AbemaCatalogRouteOwner
     fun sameOwner(owner: AbemaCatalogRouteOwner): Boolean
     fun bootstrap(owner: AbemaCatalogRouteOwner, gate: () -> Boolean, foreground: () -> Boolean): AbemaAccountBootstrap

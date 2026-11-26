@@ -632,6 +632,18 @@ active alignment held across the break. The default 256 KiB log buffer is
 overwritten within seconds during playback, so enlarge it first, for example
 `adb logcat -G 128M`.
 
+With in-video translation on, `TachiaiFrameText` logs each discontinuity of the
+translated feed as `discontinuity reason=… from=… to=… of=… sameItem=…
+windowStart=… windowJumpMs=… previousMs=… streamMs=… elapsedMs=… movedMs=…
+expectedMs=… deltaMs=… action=… reset=…` (#723). `windowJumpMs` is Media3's
+window-relative jump. The stream positions are the jump check's clock: the
+window start time plus the position when `windowStart=KNOWN`. `deltaMs` is how
+far the movement since the previous measurement fell outside what playback
+explains; above 3,000 it is a jump. `action` is `RESET`, `CHECK_POSITION`,
+`REBASE` (playback moving on into the next period, which never resets) or
+`IGNORE`. A jump found between samples logs `positionJump` with the same
+numbers before `reset cause=POSITION_JUMP`.
+
 ## Collecting one device's evidence
 
 Verify the requested device before collecting. For the persistent emulator,

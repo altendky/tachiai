@@ -42,6 +42,7 @@ import net.fstab.tachiai.presentation.FrameTextChip
 import net.fstab.tachiai.presentation.FrameTextDiscontinuityAction
 import net.fstab.tachiai.presentation.FrameTextLine
 import net.fstab.tachiai.presentation.FrameTextPipeline
+import net.fstab.tachiai.presentation.FrameTextPositionCheck
 import net.fstab.tachiai.presentation.FrameTextResetCause
 import net.fstab.tachiai.presentation.FrameTextRun
 import net.fstab.tachiai.presentation.FrameTextSample
@@ -53,11 +54,15 @@ import net.fstab.tachiai.presentation.ViewerRect
 import net.fstab.tachiai.presentation.frameSignature
 import net.fstab.tachiai.presentation.frameTextClearArea
 import net.fstab.tachiai.presentation.frameTextDiscontinuityAction
-import net.fstab.tachiai.presentation.frameTextPositionJumped
+import net.fstab.tachiai.presentation.frameTextDiscontinuityLog
+import net.fstab.tachiai.presentation.frameTextDiscontinuityResets
+import net.fstab.tachiai.presentation.frameTextPositionCheck
+import net.fstab.tachiai.presentation.frameTextPositionJumpLog
 import net.fstab.tachiai.presentation.frameTextResetLog
 import net.fstab.tachiai.presentation.frameTextSampleSize
 import net.fstab.tachiai.presentation.frameTextStateLog
 import net.fstab.tachiai.presentation.frameTextStreamPositionMs
+import net.fstab.tachiai.presentation.frameTextWindowStartKnown
 import net.fstab.tachiai.presentation.mapFrameTextBox
 import net.fstab.tachiai.presentation.placeFrameTextChip
 import net.fstab.tachiai.presentation.translationTargetLanguage
@@ -226,11 +231,16 @@ internal class FrameTextRunner(context: Context) {
         state = Attached(key, player, layer, source, pipeline)
         state.listener = object : Player.Listener {
             override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
-                when (frameTextDiscontinuityAction(reason, oldPosition.windowUid == newPosition.windowUid)) {
-                    FrameTextDiscontinuityAction.RESET -> reset(state, FrameTextResetCause.DISCONTINUITY)
-                    FrameTextDiscontinuityAction.CHECK_POSITION -> checkPositionJump(state, FrameTextResetCause.DISCONTINUITY)
-                    FrameTextDiscontinuityAction.IGNORE -> Unit
-                }
+                val sameItem = oldPosition.windowUid == newPosition.windowUid
+                val action = frameTextDiscontinuityAction(reason, sameItem)
+                // An ignored discontinuity leaves the last measurement for the next sample's check.
+                val check = measurePosition(state, commit = action != FrameTextDiscontinuityAction.IGNORE)
+                val resets = frameTextDiscontinuityResets(action, check)
+                val player = state.watched
+                log(frameTextDiscontinuityLog(reason, oldPosition.periodIndex, newPosition.periodIndex,
+                    player?.currentTimeline?.periodCount ?: 0, sameItem, windowStartKnown(player),
+                    newPosition.positionMs - oldPosition.positionMs, check, action, resets))
+                if (resets) reset(state, FrameTextResetCause.DISCONTINUITY)
             }
         }
         attached = state
@@ -263,18 +273,30 @@ internal class FrameTextRunner(context: Context) {
         if (previous != null) reset(state, FrameTextResetCause.PLAYER_CHANGED)
     }
 
-    // Catches jumps that report no seek, such as a resume after a hold, and
-    // checks period transitions and removals. Measured on the stream position,
-    // so a live window sliding forward or changing periods is not a jump.
-    private fun checkPositionJump(state: Attached, cause: FrameTextResetCause = FrameTextResetCause.POSITION_JUMP) {
-        val player = state.watched ?: return
+    private fun windowStartKnown(player: Player?) =
+        player != null && frameTextWindowStartKnown(player.currentTimeline, player.currentMediaItemIndex, window)
+
+    // Measures the stream position against the last measurement, so a live
+    // window sliding forward or changing periods is not a jump. [commit]
+    // makes this the measurement the next check starts from.
+    private fun measurePosition(state: Attached, commit: Boolean = true): FrameTextPositionCheck? {
+        val player = state.watched ?: return null
         val position = frameTextStreamPositionMs(player.currentTimeline, player.currentMediaItemIndex,
             player.currentPosition, window)
         val at = SystemClock.elapsedRealtime()
         val playing = player.isPlaying
-        if (state.lastAtMs != 0L && frameTextPositionJumped(state.lastPositionMs, state.lastAtMs, position, at,
-                playing && state.lastPlaying)) reset(state, cause)
-        state.lastPositionMs = position; state.lastAtMs = at; state.lastPlaying = playing
+        val check = if (state.lastAtMs == 0L) null
+            else frameTextPositionCheck(state.lastPositionMs, state.lastAtMs, position, at, state.lastPlaying, playing)
+        if (commit) { state.lastPositionMs = position; state.lastAtMs = at; state.lastPlaying = playing }
+        return check
+    }
+
+    // Catches jumps that report no seek, such as a resume after a hold.
+    private fun checkPositionJump(state: Attached) {
+        val check = measurePosition(state) ?: return
+        if (!check.jumped) return
+        log(frameTextPositionJumpLog(check, windowStartKnown(state.watched)))
+        reset(state, FrameTextResetCause.POSITION_JUMP)
     }
 
     /** Stops sampling, removes the chips and clears the frame and every derived value. */

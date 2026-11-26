@@ -2210,13 +2210,16 @@ tablet and TV have the same setting, control and display.
   seek-adjustment and skip discontinuities, from a transition or removal into
   another item, from a new player instance, and from the stream position
   moving more than 3 s from what playback explains, checked between samples
-  and at each period transition or removal. Playing on across a period
-  boundary, such as ABEMA live ad and programme boundaries, or an old period
-  leaving a live window keeps the chips (#723). The stream position is the
-  window's start time plus the playback position when the stream gives one
-  (DASH live, HLS with program date times), otherwise the position from the
-  start of the window's first period. A sample taken before the jump is
-  discarded.
+  and when the current period is removed. Playback that starts or stops
+  between two checks may account for any movement up to the elapsed time.
+  Playing on into the next period of the same item never resets, even where
+  the stream clock does not line up across the boundary; the check restarts
+  from the new position. So ABEMA live ad and programme boundaries, and an
+  old period leaving a live window, keep the chips (#723). The stream
+  position is the window's start time plus the playback position when the
+  stream gives one (DASH live, HLS with program date times), otherwise the
+  position from the start of the window's first period. A sample taken
+  before the jump is discarded.
 - **Display.** A near-opaque chip with the translation covers the source block,
   replacing it in place, as #643 does for titles. It is at least the size of
   the source, with text sized from the source's line height, and stays inside
@@ -2268,8 +2271,9 @@ tablet and TV have the same setting, control and display.
   in memory; they are never saved, logged or sent off the device. Frames are
   released when the feed stops being translated or the stream closes. Logs
   under `TachiaiFrameText` hold only timings, block counts, states, pairing
-  geometry (counts, overlap and gap ratios, and heights in pixels) and the
-  sampling cadence. Translations use a separate in-memory cache of 128
+  geometry (counts, overlap and gap ratios, and heights in pixels), the
+  sampling cadence and, for each discontinuity or position jump, the Media3
+  reason, period indexes and stream positions and deltas in milliseconds. Translations use a separate in-memory cache of 128
   entries, so they never evict title translations.
 
 Provider-free JVM tests cover stability and hold, box mapping and chip

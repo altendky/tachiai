@@ -123,7 +123,8 @@ private const val FRAME_TEXT_HELP = "Recognizes text that appears in the picture
     "\n\nThis is the default for this provider. While watching, More → Translate text in video turns it on or off " +
     "for that stream only; the next stream starts from this default." +
     "\n\nRecognition and translation run on this device with Google ML Kit. Video frames and recognized text are " +
-    "kept in memory only: they are not saved, logged or sent to any service. It uses the Source language above and " +
+    "kept in memory only: they are not saved or sent off this device, but the translator may write recognized " +
+    "text and its translation to this device's system log. It uses the Source language above and " +
     "the same translation models as Translate provider text, downloaded from Google once for each source language, " +
     "about 30 MB each. ML Kit also reports diagnostics, such as timing, image size and the language pair, but not " +
     "the images or text."

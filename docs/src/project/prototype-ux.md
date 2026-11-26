@@ -2405,7 +2405,10 @@ tablet and TV have the same setting, control and display.
   - **Limitation:** a name with no printed reading is still translated, and may
     be garbled. A name source such as provider metadata could come later.
 - **On-device and transient.** Frames, recognized text and translations stay
-  in memory; they are never saved, logged or sent off the device. Frames are
+  in memory; Tachiai never saves, logs or sends them off the device. ML Kit's
+  on-device translator may write recognized text and its translation to the
+  device's system log, which the user accepted
+  ([#751](https://github.com/altendky/tachiai/issues/751)). Frames are
   released when the feed stops being translated or the stream closes. Logs
   under `TachiaiFrameText` hold only timings, block counts, states, pairing
   geometry (counts, overlap and gap ratios, and heights in pixels), the

@@ -104,6 +104,7 @@ internal fun androidAbemaAccountConnectionBinding(context: Context, instanceId: 
         override fun accepted() = AndroidAbemaRenewalJobs.accepted(application)
         override fun forgotten() = AndroidAbemaRenewalJobs.forgotten(application, instanceId)
         override val routeCurrent get() = routeAdmission.canContinue()
+        override val routeRefusal get() = routeAdmission.refusal
         override fun owner(): AbemaCatalogRouteOwner {
             var captured: AbemaCatalogRouteOwner? = null
             if (!routeAdmission.check({ !poisoned.get() && !ProviderStartupScopeCleanup.isPoisoned(instanceId) }) { expected ->

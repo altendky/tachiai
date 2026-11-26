@@ -23,6 +23,9 @@ internal class AbemaAccountSnapshot(val record: AbemaStoredAccount?, val revisio
     override fun toString() = "AbemaAccountSnapshot(redacted)"
 }
 
+// The closed kind of the latest revision change (#729), for diagnostics only.
+internal enum class AbemaAccountStoreChange { REPLACED, ROLLED_BACK, FORGET, FORGET_PENDING, STORAGE_FAILED }
+
 // One ordinary application process owns account storage. Shared revisions make
 // Forget invalidate all in-memory leases synchronously before worker I/O.
 internal class AbemaAccountGrantStore(private val instanceId: String, private val storage: AbemaAccountStorage) {
@@ -31,6 +34,7 @@ internal class AbemaAccountGrantStore(private val instanceId: String, private va
     private class Shared {
         val disk = Any(); var revision = 0L; var forgetGeneration = 0L; var blocked = false; var poisoned = false
         var replacement: AbemaAccountSnapshot? = null
+        var lastChange: AbemaAccountStoreChange? = null
     }
     companion object { private val owners = ConcurrentHashMap<String, Shared>() }
     private val shared = owners.computeIfAbsent(instanceId) { Shared() }
@@ -42,8 +46,9 @@ internal class AbemaAccountGrantStore(private val instanceId: String, private va
         shared.revision
     }
     fun usable(revision: Long) = synchronized(shared) { !shared.blocked && !shared.poisoned && shared.revision == revision }
+    fun lastChange(): AbemaAccountStoreChange? = synchronized(shared) { shared.lastChange }
     private fun invalidate(): Pair<Long, Long> = synchronized(shared) {
-        shared.replacement = null
+        shared.replacement = null; shared.lastChange = AbemaAccountStoreChange.FORGET
         shared.blocked = true; shared.forgetGeneration++; ++shared.revision to shared.forgetGeneration
     }
     fun invalidateForget(): Long = invalidate().first
@@ -61,7 +66,10 @@ internal class AbemaAccountGrantStore(private val instanceId: String, private va
     private fun readDisk(): AbemaStoredAccount? {
         try {
             if (storage.forgetPending()) {
-                synchronized(shared) { shared.replacement = null; if (!shared.blocked) { shared.blocked = true; shared.revision++ } }
+                synchronized(shared) {
+                    shared.replacement = null
+                    if (!shared.blocked) { shared.blocked = true; shared.revision++; shared.lastChange = AbemaAccountStoreChange.FORGET_PENDING }
+                }
                 return null
             }
         } catch (error: Throwable) { storageFailed(error); }
@@ -106,7 +114,9 @@ internal class AbemaAccountGrantStore(private val instanceId: String, private va
             }
             val snapshot = synchronized(shared) {
                 if (!allowed || shared.blocked || shared.poisoned || shared.revision != expectedRevision) null
-                else AbemaAccountSnapshot(record, ++shared.revision, old, shared).also { shared.replacement = it }
+                else AbemaAccountSnapshot(record, ++shared.revision, old, shared).also {
+                    shared.replacement = it; shared.lastChange = AbemaAccountStoreChange.REPLACED
+                }
             }
             if (snapshot != null) return snapshot
             // Lifecycle/Forget loss during publication restores the prior
@@ -156,7 +166,7 @@ internal class AbemaAccountGrantStore(private val instanceId: String, private va
     private fun revokeRollback(expectedRevision: Long? = null, fatal: Boolean = false): Rollback? = synchronized(shared) {
         if (expectedRevision != null && (shared.blocked || shared.poisoned || shared.revision != expectedRevision)) return null
         val mayUnblock = !shared.blocked && !shared.poisoned
-        shared.replacement = null
+        shared.replacement = null; shared.lastChange = AbemaAccountStoreChange.ROLLED_BACK
         shared.blocked = true; if (fatal) shared.poisoned = true
         Rollback(++shared.revision, shared.forgetGeneration, mayUnblock)
     }
@@ -203,13 +213,17 @@ internal class AbemaAccountGrantStore(private val instanceId: String, private va
                     // known cleared record is confirmed.
                     if (shared.forgetGeneration == revoked) {
                         shared.revision++; shared.blocked = false; shared.poisoned = false
+                        shared.lastChange = AbemaAccountStoreChange.FORGET
                     }
                 }
             } catch (error: Throwable) { storageFailed(error) }
         }
     }
     private fun storageFailed(error: Throwable): Nothing {
-        synchronized(shared) { shared.replacement = null; shared.revision++; if (error !is Exception) shared.poisoned = true }
+        synchronized(shared) {
+            shared.replacement = null; shared.revision++; shared.lastChange = AbemaAccountStoreChange.STORAGE_FAILED
+            if (error !is Exception) shared.poisoned = true
+        }
         throw AbemaAccountException(AbemaAccountFailure.STORAGE_FAILED)
     }
     private fun encode(record: AbemaStoredAccount?): ByteArray {

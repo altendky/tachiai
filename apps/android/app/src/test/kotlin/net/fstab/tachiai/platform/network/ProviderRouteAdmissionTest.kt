@@ -131,4 +131,27 @@ class ProviderRouteAdmissionTest {
         assertFalse(worker.isAlive); assertFalse(accepted)
         assertEquals(second, admission.ownerProof); assertFalse(admission.canContinue())
     }
+
+    // #729: the first refusal's closed cause is kept for diagnostics only.
+    @Test fun firstRefusalNamesItsClosedCauseAndCancellationNamesNone() {
+        val cases = listOf<Pair<(String?) -> String?, ProviderRouteRefusal>>(
+            { _: String? -> throw ProviderRoutePoolException(ProviderRoutePoolFailure.SNAPSHOT_CHANGED) } to ProviderRouteRefusal.POOL_CHANGED,
+            { _: String? -> error("PRIVATE STORAGE ERROR") } to ProviderRouteRefusal.READ_FAILED,
+            { _: String? -> null } to ProviderRouteRefusal.OWNER_CHANGED,
+            { _: String? -> second } to ProviderRouteRefusal.OWNER_CHANGED,
+            { _: String? -> "invalid" } to ProviderRouteRefusal.INVALID_PROOF)
+        for ((read, cause) in cases) {
+            val admission = ProviderRouteAdmission(first)
+            assertTrue(admission.check { first }); assertNull(admission.refusal)
+            assertFalse(admission.check(readOwnerProof = read)); assertEquals(cause, admission.refusal)
+            // A later, different refusal does not replace the first cause.
+            assertFalse(admission.check { throw ProviderRoutePoolException(ProviderRoutePoolFailure.OWNER_MISMATCH) })
+            assertEquals(cause, admission.refusal)
+        }
+        val canceled = ProviderRouteAdmission(first)
+        assertFalse(canceled.check(readCancelled = { true }) { first })
+        var cancel = false
+        assertFalse(canceled.check(readCancelled = { cancel }) { cancel = true; error("INTERRUPTED READ") })
+        assertTrue(canceled.canContinue()); assertNull(canceled.refusal)
+    }
 }

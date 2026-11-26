@@ -84,7 +84,9 @@ internal fun routeSwitchNotice(route: String) = "Now using $route"
 // Status names each feed's current route by its display name ("System network"
 // without an imported route). It follows automatic switches and Retry after
 // exhaustion (user decision 2026-11-26, PR #732).
-internal fun feedRouteLabel(route: String?, switching: Boolean, exhausted: Boolean): String? = when {
+internal fun feedRouteLabel(route: String?, switching: Boolean, exhausted: Boolean, trying: String? = null): String? = when {
+    // Matches the pane until the moved feed is ready again.
+    trying != null -> "trying $trying…"
     switching -> "switching…"
     route != null -> route
     exhausted -> "none working"

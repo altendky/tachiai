@@ -659,8 +659,9 @@ feed in the same style as the quality lines, for example `A route: Tokyo 2`.
 The name is the route's configured display name, or `System network` without an
 imported route. The line follows
 [automatic route recovery](#automatic-route-recovery) and Retry after
-exhaustion, reading `switching…` during a switch and `none working` once no
-configured route works. This is common UX for every implementation (user
+exhaustion. Like the pane, it reads `trying Tokyo 2…` while a route is being
+tried and until the moved feed is ready, `switching…` before the walk names a
+route, and `none working` once no configured route works. This is common UX for every implementation (user
 decision 2026-11-26, [#732](https://github.com/altendky/tachiai/pull/732)).
 A change shows as a brief notice centered over the video below the top bar,
 which fades after about three seconds: a new pair status, including play
@@ -1155,7 +1156,10 @@ It replaces the earlier rule that a playback failure stops on its startup route.
   availability evidence (DNS, connect, or a timeout known to precede TLS), does
   it move. Authentication, entitlement, provider denials, any HTTP response,
   TLS, DRM, policy and unsafe cleanup never change the route. A paused or held
-  viewer starts no switch, as with other automatic recovery.
+  viewer starts no switch, as with other automatic recovery. This applies to
+  every provider: a Twitch validation or access request that fails before any
+  Twitch response with that evidence is a retryable network failure with
+  **Retry**, as ABEMA's preparation failures are.
 - **Scope.** Every feed of the same provider on the failed route moves together
   to the same next route; feeds on another route or provider keep playing.
   When several instances of that provider share the route, the walk considers
@@ -1180,10 +1184,12 @@ It replaces the earlier rule that a playback failure stops on its startup route.
 - **Messaging.** During the switch the failed pane says, for example,
   "Tokyo 1 isn't responding. Trying Tokyo 2…", using the routes' configured
   names and updating as the walk tries each route; its Retry is disabled. Once
-  a moved feed is ready again, a brief notice says "Now using Tokyo 2". The
-  Status panel's per-feed route line (`A route: Tokyo 2`) shows the current
-  route, `switching…` during a switch and `none working` after exhaustion, and
-  updates with each switch and Retry (user decision 2026-11-26).
+  a moved feed is ready again, a brief notice says "Now using Tokyo 2"; the
+  feed's own ready and play-status changes in that interval join it below
+  rather than replacing it. The Status panel's per-feed route line
+  (`A route: Tokyo 2`) matches the pane: `trying Tokyo 2…` until the moved feed
+  is ready, `switching…` before a route is named, `none working` after
+  exhaustion, then the current route (user decision 2026-11-26).
 - **Unchanged.** Each attempt first confirms cleanup of the affected feeds'
   old sessions. The switched-away route then closes once no other feed uses it,
   so a route sharing its tunnel identity can start; an unconfirmed close stops

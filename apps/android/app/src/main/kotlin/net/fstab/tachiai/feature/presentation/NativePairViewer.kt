@@ -1491,7 +1491,7 @@ internal class NativePairViewer(
         // Full status is in the Status panel; its changes show as brief notices.
         notices.observe(audioWarning + playbackStatus, selectedSides.associate { side ->
             side.name to (feedMessage(side) == null)
-        })?.let(::showNotice)
+        }, SystemClock.elapsedRealtime())?.let(::showNotice)
         val quality = available.mapIndexedNotNull { index, member ->
             member?.qualitySnapshot()?.let { "${if (index == 0) "A" else "B"} quality:\n${it.details()}" }
         }.joinToString("\n")
@@ -1613,7 +1613,9 @@ internal class NativePairViewer(
         suspendControls(); clearNotice(); stage.unbindPlayers(); super.onDetachedFromWindow()
     }
     // A brief notice from the owner, such as where remembered positions resumed.
-    fun announce(message: String) { if (isAttachedToWindow && visibility == VISIBLE) showNotice(message) }
+    fun announce(message: String) {
+        if (isAttachedToWindow && visibility == VISIBLE) showNotice(notices.hold(message, SystemClock.elapsedRealtime()))
+    }
     private fun showNotice(message: String) {
         if (panel == "Status") return // The open panel already shows it.
         removeCallbacks(fadeNotice); statusNotice.animate().cancel()

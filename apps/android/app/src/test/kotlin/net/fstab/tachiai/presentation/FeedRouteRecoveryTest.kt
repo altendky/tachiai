@@ -151,6 +151,11 @@ class FeedRouteRecoveryTest {
         // During the switch, then on the new route.
         assertEquals("A route: switching…\nB route: System network", status(
             feedRouteLabel(null, switching = true, exhausted = false), "System network"))
+        // Like the pane, Status names the route being tried until the feed is ready.
+        assertEquals("A route: trying Tokyo 2…", status(
+            feedRouteLabel(null, switching = true, exhausted = false, trying = "Tokyo 2"), null))
+        assertEquals("A route: trying Tokyo 2…", status(
+            feedRouteLabel("Tokyo 2", switching = false, exhausted = false, trying = "Tokyo 2"), null))
         assertEquals("A route: Tokyo 2\nB route: System network", status(
             feedRouteLabel("Tokyo 2", switching = false, exhausted = false), "System network"))
         // No configured route works; Retry from the top lands on the first again.

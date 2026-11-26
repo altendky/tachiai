@@ -93,7 +93,13 @@ internal class ViewerStatusNotices {
     private var observed = false
     private val available = linkedMapOf<String, Boolean>()
 
-    fun observe(status: String?, feeds: Map<String, Boolean>): String? {
+    // An owner announcement (such as "Now using Tokyo 2") stays first while it
+    // is shown; generic changes in the same interval join it instead of replacing it.
+    private var held: Pair<String, Long>? = null
+
+    fun hold(message: String, nowMs: Long): String { held = message to nowMs; return message }
+
+    fun observe(status: String?, feeds: Map<String, Boolean>, nowMs: Long? = null): String? {
         val lines = mutableListOf<String>()
         feeds.forEach { (name, now) ->
             val before = available.put(name, now)
@@ -105,10 +111,12 @@ internal class ViewerStatusNotices {
             this.status = text
             observed = true
         }
-        return lines.takeIf { it.isNotEmpty() }?.joinToString("\n")
+        if (lines.isEmpty()) return null
+        val announcement = held?.takeIf { (_, at) -> nowMs != null && nowMs - at in 0 until SHOWN_MS }?.first
+        return (listOfNotNull(announcement) + lines).distinct().joinToString("\n")
     }
 
-    fun reset() { status = null; observed = false; available.clear() }
+    fun reset() { status = null; observed = false; available.clear(); held = null }
 
     companion object {
         const val SHOWN_MS = 3_000L

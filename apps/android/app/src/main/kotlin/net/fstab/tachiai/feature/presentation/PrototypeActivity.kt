@@ -2610,9 +2610,11 @@ open class PrototypeActivity : ComponentActivity() {
     // Status's route line for a feed (user decision 2026-11-26, PR #732).
     private fun feedRouteStatus(index: Int): String? {
         val instanceId = selection?.slots?.getOrNull(index)?.instanceId ?: return null
+        val switch = routeSwitch?.takeIf { index in it.slots }
         return feedRouteLabel(routeChoices[instanceId]?.title,
-            switching = routeSwitch?.slots?.contains(index) == true || index in pendingRouteSwitches,
-            exhausted = exhaustedRoutes[index] != null && failures[index]?.reason == PrototypeFailureReason.ROUTES_EXHAUSTED)
+            switching = switch != null || index in pendingRouteSwitches,
+            exhausted = exhaustedRoutes[index] != null && failures[index]?.reason == PrototypeFailureReason.ROUTES_EXHAUSTED,
+            trying = switch?.trying ?: routeTries[index]?.takeIf { failures[index] == null || feedRetries[index].retrying }?.to)
     }
 
     private fun routeSwitchPaneMessage(index: Int): String? {

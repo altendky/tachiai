@@ -18,6 +18,9 @@ import java.util.concurrent.atomic.AtomicReference
 import java.net.URL
 import javax.net.ssl.HttpsURLConnection
 import net.fstab.tachiai.platform.media.BoundedNativePlayer
+import net.fstab.tachiai.platform.media.NativeFailureStage
+import net.fstab.tachiai.platform.network.ProviderTransportEvidence
+import net.fstab.tachiai.platform.network.providerTransportEvidence
 import net.fstab.tachiai.platform.media.NativeLiveSegmentCache
 import net.fstab.tachiai.platform.media.NativeMediaEvent
 import net.fstab.tachiai.platform.media.NativeMediaReadCosts
@@ -223,6 +226,15 @@ internal class PrototypeTwitchSession(
                 // A channel that isn't live yet is checked about once a minute (#587); not a failure.
                 if (!closed.get() && active() && budget.active && failure?.reason != PrototypeFailureReason.NOT_LIVE_YET)
                     diagnostics.report(FailureStage.TWITCH_PREPARE, error)
+                // #271: a validation or access request that failed before any
+                // Twitch response, with the startup fallback's route availability
+                // classification, is a retryable network failure like ABEMA's.
+                // Provider, HTTP and sign-in refusals keep their own failure.
+                if (!closed.get() && active() && budget.active && twitchPreparationNetworkFailure(failure))
+                    twitchPreparationTransport(error)?.let { evidence ->
+                        diagnostics.observeNativeEvidence(NativeFailureStage.MEDIA_REQUEST_OPEN, evidence)
+                        remember(PrototypeFeedFailure(PrototypeFailureReason.NETWORK_FAILED))
+                    }
                 handler.post {
                     if (!closed.get() && active() && budget.active) fail()
                     else if (!closed.get()) schedulePreparationCleanup()
@@ -329,3 +341,13 @@ internal fun twitchNotLiveFailure(lookup: Boolean, status: () -> CatalogResult<C
             scheduledStartEpochMs = value.scheduledStartEpochMs?.takeIf { it in 1..MAX_SCHEDULED_START_EPOCH_MS })
     }
 }
+
+// #271: route availability evidence (#270) anywhere in a Twitch preparation
+// failure's cause chain: DNS, connect, or a timeout known to precede TLS.
+internal fun twitchPreparationTransport(error: Throwable): ProviderTransportEvidence? =
+    generateSequence(error) { it.cause }.take(8).map(::providerTransportEvidence).firstOrNull { it.retryableAvailability }
+
+// Only a preparation with no recorded refusal, or the catalog's own bare
+// network failure, may become a retryable route failure.
+internal fun twitchPreparationNetworkFailure(recorded: PrototypeFeedFailure?): Boolean = recorded == null ||
+    recorded.reason == PrototypeFailureReason.NETWORK_FAILED && recorded.httpStatus == null && recorded.playerCode == null

@@ -60,16 +60,17 @@ class NativeLiveSegmentCacheTest {
         assertTrue(fetched.none { it.path.contains("/v2/") })
     }
 
-    @Test fun aShortProviderWindowIsRecordedOnlyInItsOlderHalf() {
+    @Test fun aShortProviderWindowIsRecordedOnceAQuarterOfItOld() {
         val fetched = mutableListOf<URI>()
         val cache = NativeLiveSegmentCache(executor = InlineExecutor())
         cache.attach { fetched += it }
-        // A 30 s window: recording waits until 15 s remain, so a player near
-        // the live edge fetches its own segments first.
+        // A 30 s window: recording waits until a segment is 7.5 s old, so a
+        // player near the live edge fetches its own segments first, and the
+        // queue has the rest of the window (#618).
         cache.publish(window(0, 5), 30_000)
         cache.notePlayerRequest(uri("v1", 5))
         cache.publish(window(0, 5), 30_000)
-        assertEquals(listOf(init("v1")) + (0..2).map { uri("v1", it) }, fetched)
+        assertEquals(listOf(init("v1")) + (0..3).map { uri("v1", it) }, fetched)
     }
 
     @Test fun keepsTheFloorGrowsWithTheDelayAndStopsAtTheCap() {

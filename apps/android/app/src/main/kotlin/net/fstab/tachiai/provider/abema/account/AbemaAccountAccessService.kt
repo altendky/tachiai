@@ -360,6 +360,7 @@ class AbemaAccountAccessService : Service() {
                 limitMs = AbemaAccountAccessIpc.CHECK_MS) ?: run { lost("CHECK_REFUSED", "TIME_LIMIT"); busy.set(false); end(seq); return }
             fun inTime() = SystemClock.elapsedRealtime().let { it >= began && it < deadline }
             worker {
+                val started = SystemClock.elapsedRealtime()
                 // The first refused step, as a closed cause (#729).
                 val refusal = when {
                     !inTime() -> "TIME_LIMIT"
@@ -369,6 +370,10 @@ class AbemaAccountAccessService : Service() {
                     !inTime() -> "TIME_LIMIT"
                     else -> "ADMITTED"
                 }
+                runCatching { AbemaAccountCheckStats.owner.time("queued", started - began, started) }
+                AbemaAccountCheckStats.record(AbemaAccountCheckStats.owner, "check", started,
+                    SystemClock.elapsedRealtime(), refusal == "ADMITTED")
+                logAbemaCheckStats(AbemaAccountCheckStats.owner)
                 main.post {
                     busy.set(false)
                     if (ended.get()) return@post

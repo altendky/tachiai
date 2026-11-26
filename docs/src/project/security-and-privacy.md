@@ -125,8 +125,10 @@ without a separate exception:
   the translation cache for them is a separate 128-entry in-memory cache.
 - **Logs** under `TachiaiFrameText` hold only numbers and states: capture,
   recognition and translation milliseconds, block counts, the sampling interval,
-  the running state, reset causes and name-pairing geometry (counts, overlap and
-  gap ratios, pixel heights). Failures are logged without exception text.
+  the running state, reset causes, name-pairing geometry (counts, overlap and
+  gap ratios, pixel heights) and, for each discontinuity or position jump, the
+  Media3 reason, period indexes and stream positions and deltas in
+  milliseconds. Failures are logged without exception text.
 - **Unreadable frames.** A feed decoded through a secure path (for example a
   future Widevine feed) is reported as unavailable for this feed. Tachiai does
   not change surfaces, decoders or DRM to read it.
@@ -174,9 +176,12 @@ What is retained:
   ([#618](https://github.com/altendky/tachiai/issues/618)). Replays are not
   included.
 - **Content.** The media bytes this feed's player fetched, plus segments of the
-  rendition the player is using that the cache fetches just before they leave
-  the provider's window. Every request goes through the same bounded,
-  allowlisted, budgeted transport as the player.
+  rendition the player is using that the cache fetches before they leave the
+  provider's window: 30 s before, or for a short window (Twitch's ~30 s) once
+  a segment is a quarter of the window old. At most two recordings run at a
+  time, and an HLS media sequence already recorded in any rendition is not
+  recorded again. Every request goes through the same bounded, allowlisted,
+  budgeted transport as the player.
   - A background recording that is refused or fails only narrows the window. It
     is not reported as the feed's failure; the playback budget is the exception.
     A segment that has left the manifest while its recording waited is not
@@ -207,7 +212,11 @@ What is retained:
 - **Manifest continuity.** The bounded manifest normalizer keeps timeline
   entries and periods the provider dropped, but only while the rendition in use
   has them cached. It widens the window to match, and the declared-media
-  allowlist admits only those retained segments.
+  allowlist admits only those retained segments. While the feed plays older
+  than the provider's window (or within 10 s of its start), adaptive selection
+  stays on the recorded rendition
+  ([#711](https://github.com/altendky/tachiai/issues/711)), so the player never
+  asks for an older segment of a rendition that was not recorded.
 - **Playlist continuity (Twitch).** The HLS recorder keeps segments Twitch
   dropped from a live media playlist in the playlist the player reads, with
   their original duration, date and discontinuity, only while their bodies are

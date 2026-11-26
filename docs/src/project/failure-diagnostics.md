@@ -153,10 +153,17 @@ provider's window and their duration, the first media sequence, the
 discontinuity sequence, why splicing stopped (`PREVIOUS_START`,
 `NOT_DECLARED`, `NOT_CACHED`, `HORIZON`, `DISCONTINUITY`, `SIZE`,
 `COUNT`, `SEQUENCE_START`), any history reset, and the cache's bytes, span,
-distance behind live and recording and eviction counts. A playing feed whose
+distance behind live and eviction counts. Background recordings are counted
+by outcome: `recorded`, `recordSkipped` (the segment had left the playlist
+when its turn came), `recordFetchFailed` (network, HTTP, admission or
+cancellation) and `recordNotStored` (fetched but not kept: no longer listed,
+evicted on arrival or incomplete). A playing feed whose
 loaded media all lies before its window logs `oldestResume playing` with its
 positions when it is moved to the oldest listed point. No playlist or segment
-URL, header or media is logged.
+URL, header or media is logged. A live ABEMA feed logs `recordedRendition
+pinned=true bandwidth=…` when adaptive selection is held on its recorded
+rendition behind the provider's window, and `pinned=false` when it is
+released ([#711](https://github.com/altendky/tachiai/issues/711)).
 
 ## Playback health and retry intent
 
@@ -631,6 +638,18 @@ roughly five-second `TachiaiPairOffset` drift samples, which show whether the
 active alignment held across the break. The default 256 KiB log buffer is
 overwritten within seconds during playback, so enlarge it first, for example
 `adb logcat -G 128M`.
+
+With in-video translation on, `TachiaiFrameText` logs each discontinuity of the
+translated feed as `discontinuity reason=… from=… to=… of=… sameItem=…
+windowStart=… windowJumpMs=… previousMs=… streamMs=… elapsedMs=… movedMs=…
+expectedMs=… deltaMs=… action=… reset=…` (#723). `windowJumpMs` is Media3's
+window-relative jump. The stream positions are the jump check's clock: the
+window start time plus the position when `windowStart=KNOWN`. `deltaMs` is how
+far the movement since the previous measurement fell outside what playback
+explains; above 3,000 it is a jump. `action` is `RESET`, `CHECK_POSITION`,
+`REBASE` (playback moving on into the next period, which never resets) or
+`IGNORE`. A jump found between samples logs `positionJump` with the same
+numbers before `reset cause=POSITION_JUMP`.
 
 ### Player failures at period boundaries — November 25, 2026
 

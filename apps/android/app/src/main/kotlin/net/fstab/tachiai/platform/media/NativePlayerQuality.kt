@@ -10,7 +10,9 @@ import androidx.media3.common.Tracks
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.trackselection.AdaptiveTrackSelection
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
+import androidx.media3.exoplayer.trackselection.ExoTrackSelection
 import androidx.media3.exoplayer.upstream.BandwidthMeter
 import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
 
@@ -18,9 +20,14 @@ import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
 // routes. Video uses SDK Auto, including its physical-display constraints.
 // Shared-route fairness and per-pane/render-target policies remain separate.
 @UnstableApi
-internal class NativePlayerQuality(context: Context) : AutoCloseable {
+internal class NativePlayerQuality(
+    context: Context,
+    // #711: a live feed's rewind buffer may keep adaptive selection on its
+    // recorded rendition while the feed plays behind the provider's window.
+    selectionFactory: ExoTrackSelection.Factory = AdaptiveTrackSelection.Factory(),
+) : AutoCloseable {
     val bandwidthMeter = DefaultBandwidthMeter.Builder(context.applicationContext).build()
-    val trackSelector = DefaultTrackSelector(context.applicationContext).apply {
+    val trackSelector = DefaultTrackSelector(context.applicationContext, selectionFactory).apply {
         parameters = parameters.buildUpon()
             .setAllowMultipleAdaptiveSelections(false)
             .setForceHighestSupportedBitrate(false)

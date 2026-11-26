@@ -201,4 +201,72 @@ class FeedRetryPlaybackIntegrationTest {
             assertTrue(sibling.value.playing && sibling.value.playWhenReady)
         }
     }
+
+    private fun Member.live() = apply { value = value.copy(live = true, dynamic = true, windowStartMs = 1_000_000) }
+
+    // #737: replay, live and mixed (live with replay) pairs, either side rejoining.
+    private fun rejoinCases() = NativeMixedSide.entries.flatMap { side ->
+        listOf(false to false, true to true, true to false, false to true).map { (siblingLive, targetLive) ->
+            Triple(side, siblingLive, targetLive)
+        }
+    }
+
+    @Test fun `rejoining a playing pair reports its actual transport, never prepared paused`() {
+        for ((side, siblingLive, targetLive) in rejoinCases()) {
+            val case = "side=$side siblingLive=$siblingLive targetLive=$targetLive"
+            val sibling = Member(true).apply { if (siblingLive) live() }
+            val replacement = Member(false).apply { if (targetLive) live() }
+            val controller = PrototypePlaybackController({ true })
+            val siblingSide = if (side == NativeMixedSide.A) NativeMixedSide.B else NativeMixedSide.A
+            controller.setMember(siblingSide, sibling)
+            val notices = ViewerStatusNotices()
+            val feeds = { mapOf("A" to (controller.member(NativeMixedSide.A) != null),
+                "B" to (controller.member(NativeMixedSide.B) != null)) }
+            notices.observe(controller.status, feeds(), 0)
+            controller.setMember(side, replacement)
+            // Joined while its sibling plays on: the pair is not paused.
+            assertNotEquals(case, "Prepared paused; press Play.", controller.status)
+            val route = notices.hold("Now using Tokyo 2", 1_000)
+            val joined = notices.observe(controller.status, feeds(), 1_000)
+            assertEquals(case, "$route\n${side.name} ready", joined)
+            assertTrue(case, controller.rejoin(side, replacement, sibling))
+            assertTrue(case, replacement.value.playing && sibling.value.playing)
+            assertEquals(case, "Retried feed playback requested; existing feed left playing.", controller.status)
+            assertEquals(case, controller.status, controller.pair!!.status)
+            assertEquals(case, "$route\nRetried feed playback requested; existing feed left playing.",
+                notices.observe(controller.status, feeds(), 1_500))
+            // Later pair commands keep owning the status.
+            assertTrue(case, controller.pause())
+            assertEquals(case, "Paused.", controller.status)
+        }
+    }
+
+    @Test fun `a refused rejoin does not claim the still-playing pair is paused`() {
+        for ((side, siblingLive, targetLive) in rejoinCases()) {
+            val case = "side=$side siblingLive=$siblingLive targetLive=$targetLive"
+            val sibling = Member(true).apply { if (siblingLive) live() }
+            val replacement = Member(false).apply { if (targetLive) live(); refusePlay = true }
+            val controller = PrototypePlaybackController({ true })
+            controller.setMember(if (side == NativeMixedSide.A) NativeMixedSide.B else NativeMixedSide.A, sibling)
+            controller.setMember(side, replacement)
+            assertFalse(case, controller.rejoin(side, replacement, sibling))
+            assertTrue(case, sibling.value.playing && !replacement.value.playWhenReady)
+            assertEquals(case, "One feed playing; the other feed is unavailable.", controller.status)
+        }
+    }
+
+    @Test fun `a feed joining a paused pair still reports prepared paused`() {
+        for ((side, siblingLive, targetLive) in rejoinCases()) {
+            val case = "side=$side siblingLive=$siblingLive targetLive=$targetLive"
+            val sibling = Member(true).apply { if (siblingLive) live() }
+            val replacement = Member(false).apply { if (targetLive) live() }
+            val controller = PrototypePlaybackController({ true })
+            controller.setMember(if (side == NativeMixedSide.A) NativeMixedSide.B else NativeMixedSide.A, sibling)
+            assertTrue(case, controller.pause()) // The user paused during the retry.
+            controller.setMember(side, replacement)
+            assertFalse(case, controller.rejoin(side, replacement, sibling))
+            assertFalse(case, sibling.value.playWhenReady || replacement.value.playWhenReady)
+            assertEquals(case, "Prepared paused; press Play.", controller.status)
+        }
+    }
 }

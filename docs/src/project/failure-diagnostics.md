@@ -651,6 +651,54 @@ explains; above 3,000 it is a jump. `action` is `RESET`, `CHECK_POSITION`,
 `IGNORE`. A jump found between samples logs `positionJump` with the same
 numbers before `reset cause=POSITION_JUMP`.
 
+### Player failures at period boundaries — November 25, 2026
+
+On a Pixel 6, ABEMA News live failed with player error 2000
+(`ERROR_CODE_IO_UNSPECIFIED`) 22 s after an ad-to-programme manifest change,
+and only Retry recovered it ([#722](https://github.com/altendky/tachiai/issues/722)).
+The device log did not name the exception. These code paths produce exactly
+that error at a period change and are now closed. None is proven to be the
+cause of that occurrence.
+
+- **Manifest reloads.** The player's error policy had a minimum retry count of
+  zero. Media3 then failed the feed on the first live manifest refresh it
+  refused as out of sync with, or older than, the previous one
+  (`DashManifestStaleException`). It also failed on any manifest refresh still
+  being retried when a renderer waited, as it does at a period boundary or the
+  live edge. Manifest refreshes now get six reloads (about 15 s); media and DRM
+  loads, and the terminal manifest policy refusal, are unchanged.
+- **Retained periods.** The rewind buffer keeps periods the provider dropped
+  while their media is cached ([#697](https://github.com/altendky/tachiai/pull/697)).
+  Retention could skip a period whose recording was incomplete while keeping an
+  older one. Media3 matches periods by position, so it refused that manifest as
+  out of sync. Retained periods now leave only from the front.
+- **Out-of-sync refreshes.** The manifest parser now applies Media3's
+  out-of-sync rule itself. A live refresh that lost a period after its first
+  one (for example an announced ad period the provider withdrew) is refused as
+  a retryable load error. It does not replace the declared media or the
+  retained periods while the player keeps playing the previous manifest. Each
+  refusal logs a closed `manifestOutOfSync` line under `TachiaiCachedAbema`.
+
+Cached ABEMA playback logs a closed `playerFailure` line under
+`TachiaiCachedAbema` before `native=PLAYER_FAILED`:
+`playerFailure code=… name=… source=… manifestStale=… causes=…`. `name` is the
+Media3 error-code constant. `source` is `SOURCE`, `RENDERER`, `DRM`,
+`UNEXPECTED`, `REMOTE` or `UNKNOWN`; any license or DRM-session exception
+reads `DRM`. `manifestStale` is true when the feed failed because its live
+manifest refreshes kept being refused as out of sync or older than the previous
+one. `causes` is the exception class chain, at most eight class names.
+The viewer's `failure=` line under `TachiaiPrototype` adds the same record,
+`periodBoundaryAgeMs` (time since the player crossed a period or the live
+period count changed) and the automatic-recovery decision. No message, URL,
+header, token or response body is logged.
+
+A live feed that was playing and fails with 2000 from its source is retried
+automatically. This applies within 60 s of a period boundary, or after a refused
+manifest at any time. It uses the existing bounded backoff: at most three
+attempts per incident, six in ten minutes, then Retry. TLS or cancellation
+evidence, and HTTP rejections other than 404, 408, 429 and 5xx, refuse it at
+any age.
+
 ## Collecting one device's evidence
 
 Verify the requested device before collecting. For the persistent emulator,

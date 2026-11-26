@@ -29,12 +29,19 @@ internal class NativePlayerDiagnostics(private val clockMs: () -> Long = SystemC
         val terminalVeto: MediaFailure? = null)
     private val failures = AtomicReference(FailureState())
     private val errorCode = AtomicReference<Int?>()
+    private val playerFailure = AtomicReference<NativePlayerFailure?>()
+    private val periodBoundaryAt = AtomicReference<Long?>()
     private val cached = AtomicReference<NativePlaybackDiagnosticSnapshot?>()
     private val video = NativeVideoCounterTracker()
 
     @Synchronized fun recordFailure(stage: NativeFailureStage, error: Throwable) {
         val now = clockMs()
-        if (error is PlaybackException) errorCode.set(error.errorCode)
+        if (error is PlaybackException) {
+            errorCode.set(error.errorCode)
+            // The first fatal error owns the record; cleanup cannot replace it.
+            if (stage == NativeFailureStage.PLAYER_ERROR)
+                runCatching { nativePlayerFailure(error) }.getOrNull()?.let { playerFailure.compareAndSet(null, it) }
+        }
         val safeTransport = (error as? NativeMediaRequestException)?.transportEvidence
             ?: (error as? ProviderTransportFailureCarrier)?.transportFailure
         val mediaObserved = stage in setOf(NativeFailureStage.MEDIA_REQUEST_OPEN, NativeFailureStage.MEDIA_REQUEST_READ) || safeTransport != null
@@ -59,6 +66,9 @@ internal class NativePlayerDiagnostics(private val clockMs: () -> Long = SystemC
         }
     }
     fun recordPlayerError(code: Int) { errorCode.set(code) }
+    // #722: the player crossed into another period, or the period structure
+    // of its live manifest changed.
+    fun recordPeriodBoundary() { periodBoundaryAt.set(clockMs()) }
 
     fun capture(player: ExoPlayer, timing: NativeTimingSnapshot?): NativePlaybackDiagnosticSnapshot? {
         // An error/release can clear the timeline. Preserve the last complete
@@ -102,6 +112,7 @@ internal class NativePlayerDiagnostics(private val clockMs: () -> Long = SystemC
         // an explicitly empty local/policy projection, through that cleanup.
         val media = state.terminalVeto ?: if (state.terminalRecorded) state.terminalMedia else state.media
         return value.copy(failureStage = latest?.stage, failureAgeMs = nativeDiagnosticAge(now, latest?.at),
+            playerFailure = playerFailure.get(), periodBoundaryAgeMs = nativeDiagnosticAge(now, periodBoundaryAt.get()),
             transportFailure = media?.let { evidence -> evidence.transport?.let { transport ->
                 nativeDiagnosticAge(now, evidence.at)?.let { age -> NativePlaybackTransportFailure(evidence.stage, age, transport) }
             } }, httpFailure = media?.let { evidence -> evidence.httpStatus?.let { status ->

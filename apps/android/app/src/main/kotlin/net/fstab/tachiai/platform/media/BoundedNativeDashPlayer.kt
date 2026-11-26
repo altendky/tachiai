@@ -69,6 +69,8 @@ internal class BoundedNativeDashPlayer(
     private val onCleanupChanged: () -> Unit = {},
     transportObserver: NativeMediaTransportObserver? = null,
     private val onPeriodChange: (NativeDashPeriodChange) -> Unit = {},
+    // #722: a text-free record of a fatal player error, before PLAYER_FAILED.
+    private val onPlayerFailure: (NativePlayerFailure) -> Unit = {},
     // #568: a live feed's in-memory rewind buffer, shared with its manifest parser.
     private val liveCache: NativeLiveSegmentCache? = null,
 ) : NativePairMember {
@@ -178,7 +180,8 @@ internal class BoundedNativeDashPlayer(
             DefaultDashChunkSource.Factory(DataSource.Factory { requests.create(C.DATA_TYPE_MEDIA) }),
             DataSource.Factory { manifests.create(C.DATA_TYPE_MANIFEST) })
             .setManifestParser(acceptedParser)
-            .setLoadErrorHandlingPolicy(policy)
+            // #722: reloads a refused live manifest before failing the feed.
+            .setLoadErrorHandlingPolicy(NativeDashLoadErrorHandlingPolicy(policy))
             .setDrmSessionManagerProvider { prewarm ?: manager }
         player = quality.configure(ExoPlayer.Builder(context.applicationContext))
             .setMediaSourceFactory(sourceFactory)
@@ -215,10 +218,19 @@ internal class BoundedNativeDashPlayer(
                 override fun onRenderedFirstFrame() {
                     if (!released) onEvent(NativeDashEvent.VIDEO_FRAME, 0)
                 }
+                // #722: period structure changes, for failure attribution only.
+                private var timelinePeriods = -1
+                override fun onTimelineChanged(timeline: Timeline, reason: Int) {
+                    if (released) return
+                    val periods = timeline.periodCount
+                    if (timelinePeriods >= 0 && periods != timelinePeriods) diagnostics.recordPeriodBoundary()
+                    timelinePeriods = periods
+                }
                 // Diagnostics only: period boundaries and other non-seek moves.
                 override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo,
                     newPosition: Player.PositionInfo, reason: Int) {
                     if (released || reason == Player.DISCONTINUITY_REASON_SEEK) return
+                    if (oldPosition.periodIndex != newPosition.periodIndex) diagnostics.recordPeriodBoundary()
                     try {
                         val manifest = player.currentManifest as? DashManifest
                         val jump = if (oldPosition.mediaItemIndex == newPosition.mediaItemIndex)
@@ -232,6 +244,7 @@ internal class BoundedNativeDashPlayer(
                 override fun onPlayerError(error: PlaybackException) {
                     diagnostics.recordPlayerError(error.errorCode)
                     if (!released) reportNativeFailure(NativeFailureStage.PLAYER_ERROR, observedFailure, error)
+                    if (!released) runCatching { onPlayerFailure(nativePlayerFailure(error)) }
                     if (!released) { onEvent(NativeDashEvent.PLAYER_FAILED, error.errorCode); cleanup.stopInternally(observedFailure, ::close) }
                 }
             })

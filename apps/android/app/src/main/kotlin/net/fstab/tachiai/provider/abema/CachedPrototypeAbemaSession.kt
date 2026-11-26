@@ -935,6 +935,7 @@ internal class CachedPrototypeAbemaSession(
                 if (event == DashManifestPolicyEvent.REFUSED) remember(PrototypeFeedFailure(PrototypeFailureReason.UNSUPPORTED_MEDIA))
             },
             onRefusal = { stage -> handler.post { if (current(run)) record("manifestRefused stage=${stage.name}") } },
+            onOutOfSync = { handler.post { if (current(run)) record("manifestOutOfSync") } },
             validateModel = { parsed -> (transitions?.requiresDeclarationFreeModel != true ||
                 (0 until parsed.periodCount).all { period -> parsed.getPeriod(period).adaptationSets.all { adaptation ->
                     adaptation.representations.all { it.format.drmInitData == null }
@@ -983,6 +984,8 @@ internal class CachedPrototypeAbemaSession(
                 openConnection = ::openConnection, onFailure = diagnostics.nativeObserver(),
                 transportObserver = diagnostics.nativeTransportObserver(),
                 onPeriodChange = { change -> handler.post { if (current(run)) record(change.closedSummary()) } },
+                // #722: posted before PLAYER_FAILED, which ends this run.
+                onPlayerFailure = { failure -> handler.post { if (current(run)) record(failure.closedSummary()) } },
                 liveCache = liveCache,
                 onCleanupOwner = { nativeCleanup = it },
                 onCleanupChanged = ::nativeCleanupChanged,

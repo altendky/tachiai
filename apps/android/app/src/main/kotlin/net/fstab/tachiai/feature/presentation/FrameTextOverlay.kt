@@ -39,6 +39,7 @@ import kotlinx.coroutines.withContext
 import net.fstab.tachiai.platform.translation.MlKitFrameTextRecognizer
 import net.fstab.tachiai.presentation.FRAME_TEXT_LOG_TAG
 import net.fstab.tachiai.presentation.FrameTextChip
+import net.fstab.tachiai.presentation.FrameTextDiscontinuityAction
 import net.fstab.tachiai.presentation.FrameTextLine
 import net.fstab.tachiai.presentation.FrameTextPipeline
 import net.fstab.tachiai.presentation.FrameTextResetCause
@@ -51,11 +52,12 @@ import net.fstab.tachiai.presentation.ViewerInsets
 import net.fstab.tachiai.presentation.ViewerRect
 import net.fstab.tachiai.presentation.frameSignature
 import net.fstab.tachiai.presentation.frameTextClearArea
+import net.fstab.tachiai.presentation.frameTextDiscontinuityAction
 import net.fstab.tachiai.presentation.frameTextPositionJumped
 import net.fstab.tachiai.presentation.frameTextResetLog
-import net.fstab.tachiai.presentation.frameTextResetsOn
 import net.fstab.tachiai.presentation.frameTextSampleSize
 import net.fstab.tachiai.presentation.frameTextStateLog
+import net.fstab.tachiai.presentation.frameTextStreamPositionMs
 import net.fstab.tachiai.presentation.mapFrameTextBox
 import net.fstab.tachiai.presentation.placeFrameTextChip
 import net.fstab.tachiai.presentation.translationTargetLanguage
@@ -190,7 +192,8 @@ internal class FrameTextRunner(context: Context) {
         // A higher-resolution frame, only while a name's small reading is sought.
         var detail: Bitmap? = null
         var loop: Job? = null
-        // Position discontinuities (#664): any jump drops held text and chips.
+        // Position discontinuities (#664): any jump drops held text and chips;
+        // crossing a live period boundary does not (#723).
         lateinit var listener: Player.Listener
         var watched: Player? = null
         var generation = 0L
@@ -223,7 +226,11 @@ internal class FrameTextRunner(context: Context) {
         state = Attached(key, player, layer, source, pipeline)
         state.listener = object : Player.Listener {
             override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
-                if (frameTextResetsOn(reason)) reset(state, FrameTextResetCause.DISCONTINUITY)
+                when (frameTextDiscontinuityAction(reason, oldPosition.windowUid == newPosition.windowUid)) {
+                    FrameTextDiscontinuityAction.RESET -> reset(state, FrameTextResetCause.DISCONTINUITY)
+                    FrameTextDiscontinuityAction.CHECK_POSITION -> checkPositionJump(state, FrameTextResetCause.DISCONTINUITY)
+                    FrameTextDiscontinuityAction.IGNORE -> Unit
+                }
             }
         }
         attached = state
@@ -256,22 +263,17 @@ internal class FrameTextRunner(context: Context) {
         if (previous != null) reset(state, FrameTextResetCause.PLAYER_CHANGED)
     }
 
-    // A position in the period, so a live window sliding forward is not a jump.
-    private fun periodPositionMs(player: Player): Long {
-        val timeline = player.currentTimeline
-        val offset = if (timeline.isEmpty || player.currentMediaItemIndex >= timeline.windowCount) 0L
-            else timeline.getWindow(player.currentMediaItemIndex, window).positionInFirstPeriodMs
-        return player.currentPosition + offset
-    }
-
-    // Catches jumps that report no seek, such as a resume after a hold.
-    private fun checkPositionJump(state: Attached) {
+    // Catches jumps that report no seek, such as a resume after a hold, and
+    // checks period transitions and removals. Measured on the stream position,
+    // so a live window sliding forward or changing periods is not a jump.
+    private fun checkPositionJump(state: Attached, cause: FrameTextResetCause = FrameTextResetCause.POSITION_JUMP) {
         val player = state.watched ?: return
-        val position = periodPositionMs(player)
+        val position = frameTextStreamPositionMs(player.currentTimeline, player.currentMediaItemIndex,
+            player.currentPosition, window)
         val at = SystemClock.elapsedRealtime()
         val playing = player.isPlaying
         if (state.lastAtMs != 0L && frameTextPositionJumped(state.lastPositionMs, state.lastAtMs, position, at,
-                playing && state.lastPlaying)) reset(state, FrameTextResetCause.POSITION_JUMP)
+                playing && state.lastPlaying)) reset(state, cause)
         state.lastPositionMs = position; state.lastAtMs = at; state.lastPlaying = playing
     }
 

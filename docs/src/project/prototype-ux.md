@@ -2202,14 +2202,20 @@ tablet and TV have the same setting, control and display.
   covers at least 30% of the smaller box, such as a new caption over an old
   one. The replaced text stays suppressed while it is still read. A name and
   its printed reading are not treated as overlapping.
-- **Jumps start over.** Any position discontinuity drops all held blocks and
-  chips for the feed, and text must settle again. This covers a seek or skip
-  from any control (transport, scrub, remote Left/Right, fast-forward and
-  rewind, double tap), Back to live, start over, a timing shift that seeks,
-  and a resume at a new position. It is detected from the player's seek,
-  seek-adjustment, skip, removal and item-change discontinuities, from a new
-  player instance, and from the position moving more than 3 s from what
-  playback explains between samples. A sample taken before the jump is
+- **Jumps start over.** Any position jump drops all held blocks and chips for
+  the feed, and text must settle again. This covers a seek or skip from any
+  control (transport, scrub, remote Left/Right, fast-forward and rewind,
+  double tap), Back to live, start over, a timing shift that seeks, and a
+  resume at a new position. It is detected from the player's seek,
+  seek-adjustment and skip discontinuities, from a transition or removal into
+  another item, from a new player instance, and from the stream position
+  moving more than 3 s from what playback explains, checked between samples
+  and at each period transition or removal. Playing on across a period
+  boundary, such as ABEMA live ad and programme boundaries, or an old period
+  leaving a live window keeps the chips (#723). The stream position is the
+  window's start time plus the playback position when the stream gives one
+  (DASH live, HLS with program date times), otherwise the position from the
+  start of the window's first period. A sample taken before the jump is
   discarded.
 - **Display.** A near-opaque chip with the translation covers the source block,
   replacing it in place, as #643 does for titles. It is at least the size of

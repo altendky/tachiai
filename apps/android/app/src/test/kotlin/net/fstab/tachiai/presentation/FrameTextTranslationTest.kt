@@ -1,5 +1,9 @@
 package net.fstab.tachiai.presentation
 
+import androidx.media3.common.AdPlaybackState
+import androidx.media3.common.C
+import androidx.media3.common.Player
+import androidx.media3.common.Timeline
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -297,13 +301,59 @@ class FrameTextTranslationTest {
     // ---- Position discontinuities ----
 
     @Test fun seeksSkipsAndItemChangesReset() {
-        listOf(androidx.media3.common.Player.DISCONTINUITY_REASON_SEEK,
-            androidx.media3.common.Player.DISCONTINUITY_REASON_SEEK_ADJUSTMENT,
-            androidx.media3.common.Player.DISCONTINUITY_REASON_SKIP,
-            androidx.media3.common.Player.DISCONTINUITY_REASON_REMOVE,
-            androidx.media3.common.Player.DISCONTINUITY_REASON_AUTO_TRANSITION).forEach { assertTrue(frameTextResetsOn(it)) }
-        assertFalse(frameTextResetsOn(androidx.media3.common.Player.DISCONTINUITY_REASON_INTERNAL))
-        assertFalse(frameTextResetsOn(androidx.media3.common.Player.DISCONTINUITY_REASON_SILENCE_SKIP))
+        listOf(Player.DISCONTINUITY_REASON_SEEK, Player.DISCONTINUITY_REASON_SEEK_ADJUSTMENT,
+            Player.DISCONTINUITY_REASON_SKIP).forEach { reason ->
+            listOf(true, false).forEach { assertEquals(FrameTextDiscontinuityAction.RESET, frameTextDiscontinuityAction(reason, it)) }
+        }
+        // A transition or removal into another item resets; within the item only the position decides.
+        listOf(Player.DISCONTINUITY_REASON_AUTO_TRANSITION, Player.DISCONTINUITY_REASON_REMOVE).forEach {
+            assertEquals(FrameTextDiscontinuityAction.RESET, frameTextDiscontinuityAction(it, sameItem = false))
+            assertEquals(FrameTextDiscontinuityAction.CHECK_POSITION, frameTextDiscontinuityAction(it, sameItem = true))
+        }
+        listOf(Player.DISCONTINUITY_REASON_INTERNAL, Player.DISCONTINUITY_REASON_SILENCE_SKIP).forEach {
+            assertEquals(FrameTextDiscontinuityAction.IGNORE, frameTextDiscontinuityAction(it, sameItem = true))
+        }
+    }
+
+    @Test fun playingAcrossALivePeriodBoundaryDoesNotReset() {
+        // An ad period [0 s, 15 s) then a programme period, both in the live window.
+        val periods = listOf(0L to 15_000L, 15_000L to 600_000L)
+        val before = LiveTimeline(periods, offsetInFirstPeriodMs = 5_000)
+        // 13 s into the ad, then 2 s later 0.2 s into the programme while the window slid 2 s.
+        val previous = frameTextStreamPositionMs(before, 0, 13_000 - 5_000)
+        val after = LiveTimeline(periods, offsetInFirstPeriodMs = 7_000)
+        val position = frameTextStreamPositionMs(after, 0, 15_200 - 7_000)
+        assertEquals(AVAILABILITY_START_MS + 13_000, previous)
+        assertEquals(AVAILABILITY_START_MS + 15_200, position)
+        assertEquals(FrameTextDiscontinuityAction.CHECK_POSITION,
+            frameTextDiscontinuityAction(Player.DISCONTINUITY_REASON_AUTO_TRANSITION, sameItem = true))
+        assertFalse(frameTextPositionJumped(previous, 1_000, position, 3_000, playing = true))
+        // Seeking back 30 s in the same window is still a jump.
+        assertTrue(frameTextPositionJumped(position, 3_000, position - 30_000, 5_000, playing = true))
+    }
+
+    @Test fun aPeriodLeavingTheWindowWhilePlayingContinuouslyDoesNotReset() {
+        // The window starts 0.5 s before the programme, which plays 20 s in.
+        val before = LiveTimeline(listOf(0L to 15_000L, 15_000L to 600_000L), offsetInFirstPeriodMs = 14_500)
+        val previous = frameTextStreamPositionMs(before, 0, 35_000 - 14_500)
+        // 2 s later the ad period has left the window: the programme is first and the window starts 1.5 s into it.
+        val after = LiveTimeline(listOf(15_000L to 600_000L), offsetInFirstPeriodMs = 1_500)
+        val position = frameTextStreamPositionMs(after, 0, 37_000 - 15_000 - 1_500)
+        assertEquals(AVAILABILITY_START_MS + 37_000, position)
+        assertEquals(FrameTextDiscontinuityAction.CHECK_POSITION,
+            frameTextDiscontinuityAction(Player.DISCONTINUITY_REASON_REMOVE, sameItem = true))
+        assertFalse(frameTextPositionJumped(previous, 1_000, position, 3_000, playing = true))
+        // A removal that moves playback (fallen behind the window) still resets.
+        val moved = frameTextStreamPositionMs(after, 0, 60_000 - 15_000 - 1_500)
+        assertTrue(frameTextPositionJumped(previous, 1_000, moved, 3_000, playing = true))
+    }
+
+    @Test fun withoutAWindowStartTimeTheStreamPositionIsFromTheFirstPeriod() {
+        val replay = LiveTimeline(listOf(0L to 15_000L, 15_000L to 600_000L), offsetInFirstPeriodMs = 0,
+            availabilityStartMs = C.TIME_UNSET)
+        assertEquals(14_000, frameTextStreamPositionMs(replay, 0, 14_000))
+        assertEquals(16_000, frameTextStreamPositionMs(replay, 0, 16_000))
+        assertEquals(16_000, frameTextStreamPositionMs(Timeline.EMPTY, 0, 16_000))
     }
 
     @Test fun positionJumpsBeyondPlaybackAreDetected() {
@@ -332,5 +382,39 @@ class FrameTextTranslationTest {
         assertTrue(pipeline.process(sample, 1, 2_000).isEmpty())
         assertEquals(2, sample.recognitions)
         assertEquals(listOf("Caption EN"), pipeline.process(sample, 1, 2_000).map { it.text })
+    }
+
+    /**
+     * A live window over consecutive periods (start, duration in ms), shaped
+     * like Media3's DASH timeline: the window starts [offsetInFirstPeriodMs]
+     * into the first period and its start time is the availability start plus
+     * that period's start and the offset.
+     */
+    private class LiveTimeline(
+        private val periods: List<Pair<Long, Long>>,
+        private val offsetInFirstPeriodMs: Long,
+        private val availabilityStartMs: Long = AVAILABILITY_START_MS,
+    ) : Timeline() {
+        override fun getWindowCount() = 1
+        override fun getWindow(windowIndex: Int, window: Window, defaultPositionProjectionUs: Long): Window {
+            val firstStartMs = periods.first().first
+            val endMs = periods.last().let { it.first + it.second }
+            return window.set(Window.SINGLE_WINDOW_UID, null, null, availabilityStartMs,
+                if (availabilityStartMs == C.TIME_UNSET) C.TIME_UNSET else availabilityStartMs + firstStartMs + offsetInFirstPeriodMs,
+                C.TIME_UNSET, true, availabilityStartMs != C.TIME_UNSET, null, 0,
+                (endMs - firstStartMs - offsetInFirstPeriodMs) * 1_000, 0, periods.size - 1, offsetInFirstPeriodMs * 1_000)
+        }
+        override fun getPeriodCount() = periods.size
+        override fun getPeriod(periodIndex: Int, period: Period, setIds: Boolean): Period {
+            val (startMs, durationMs) = periods[periodIndex]
+            return period.set(startMs, startMs, 0, durationMs * 1_000,
+                (startMs - periods.first().first - offsetInFirstPeriodMs) * 1_000, AdPlaybackState.NONE, false)
+        }
+        override fun getIndexOfPeriod(uid: Any) = periods.indexOfFirst { it.first == uid }
+        override fun getUidOfPeriod(periodIndex: Int): Any = periods[periodIndex].first
+    }
+
+    private companion object {
+        const val AVAILABILITY_START_MS = 1_790_000_000_000L
     }
 }

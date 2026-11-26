@@ -1,6 +1,8 @@
 package net.fstab.tachiai.presentation
 
+import androidx.media3.common.C
 import androidx.media3.common.Player
+import androidx.media3.common.Timeline
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.floor
@@ -331,18 +333,45 @@ internal fun frameTextTranslateLog(ms: Long, translated: Boolean): String =
     "translate ms=$ms result=${if (translated) "TRANSLATED" else "ORIGINAL"}"
 
 /**
- * Player discontinuities that move the picture to another position or item:
- * a seek (transport, scrub, skip, Back to live, a timing shift), its
- * adjustment, a skipped ad or period, or a removed or changed item. Held text
- * and chips from before it are dropped.
+ * The playing position on the stream's own clock: the window's start time
+ * plus [positionMs] when the stream gives one (DASH live, HLS with program
+ * date times), otherwise the position from the start of the window's first
+ * period. A live window sliding forward, playback crossing into the next
+ * period or an old period leaving the window does not move it (#723).
  */
-internal fun frameTextResetsOn(reason: Int): Boolean = reason in setOf(
-    Player.DISCONTINUITY_REASON_SEEK,
-    Player.DISCONTINUITY_REASON_SEEK_ADJUSTMENT,
-    Player.DISCONTINUITY_REASON_SKIP,
-    Player.DISCONTINUITY_REASON_REMOVE,
-    Player.DISCONTINUITY_REASON_AUTO_TRANSITION,
-)
+internal fun frameTextStreamPositionMs(
+    timeline: Timeline,
+    windowIndex: Int,
+    positionMs: Long,
+    window: Timeline.Window = Timeline.Window(),
+): Long {
+    if (timeline.isEmpty || windowIndex !in 0 until timeline.windowCount) return positionMs
+    timeline.getWindow(windowIndex, window)
+    return positionMs + if (window.windowStartTimeMs != C.TIME_UNSET) window.windowStartTimeMs
+        else window.positionInFirstPeriodMs
+}
+
+internal enum class FrameTextDiscontinuityAction { RESET, CHECK_POSITION, IGNORE }
+
+/**
+ * What a player discontinuity means for held text and chips. A seek
+ * (transport, scrub, skip, Back to live, a timing shift), its adjustment or a
+ * skipped ad or period moves the picture, so they are dropped. Playback moving
+ * into the next period, or the current period leaving the timeline, drops them
+ * only when the item changed or the stream position jumped: a live stream's
+ * period boundaries at ads and programmes keep them (#723).
+ */
+internal fun frameTextDiscontinuityAction(reason: Int, sameItem: Boolean): FrameTextDiscontinuityAction =
+    when (reason) {
+        Player.DISCONTINUITY_REASON_SEEK,
+        Player.DISCONTINUITY_REASON_SEEK_ADJUSTMENT,
+        Player.DISCONTINUITY_REASON_SKIP,
+        -> FrameTextDiscontinuityAction.RESET
+        Player.DISCONTINUITY_REASON_AUTO_TRANSITION,
+        Player.DISCONTINUITY_REASON_REMOVE,
+        -> if (sameItem) FrameTextDiscontinuityAction.CHECK_POSITION else FrameTextDiscontinuityAction.RESET
+        else -> FrameTextDiscontinuityAction.IGNORE
+    }
 
 internal enum class FrameTextResetCause { DISCONTINUITY, POSITION_JUMP, PLAYER_CHANGED }
 

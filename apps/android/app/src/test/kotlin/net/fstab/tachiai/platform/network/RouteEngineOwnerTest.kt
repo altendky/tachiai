@@ -41,7 +41,7 @@ class RouteEngineOwnerTest {
         val b = owner.lease("config-a", "key-a", security) { FakeEngine() }
         a.close(); b.close(); timers.toList().forEach { it() }
         assertEquals(listOf("ENGINE_STARTED engines=1", "LEASE_OPENED leases=1", "LEASE_OPENED leases=2",
-            "ENGINE_RETIRED engines=0"), events)
+            "LEASE_CLOSED leases=1", "LEASE_CLOSED leases=0", "ENGINE_RETIRED engines=0"), events)
         assertTrue(events.none { it.contains("config") || it.contains("key") || it.contains("synthetic") })
     }
 
@@ -158,7 +158,8 @@ class RouteEngineOwnerTest {
         account.close(); account.close()
         assertEquals(1, f.bound.single().closes); assertTrue(f.timers.isEmpty()); assertEquals(0, f.owner.engineCount())
         assertEquals(listOf("JOB_ENGINE_STARTED engines=1", "LEASE_OPENED leases=1", "JOB_LEASE_JOINED engine=JOB",
-            "LEASE_OPENED leases=2", "JOB_ENGINE_RETIRED reason=RELEASED engines=0"), f.events)
+            "LEASE_OPENED leases=2", "LEASE_CLOSED leases=1", "LEASE_CLOSED leases=0",
+            "JOB_ENGINE_RETIRED reason=RELEASED engines=0"), f.events)
         f.job().close()
         assertEquals(2, f.bound.size); assertEquals(1, f.maxLive)
     }
@@ -173,6 +174,7 @@ class RouteEngineOwnerTest {
             "JOB_ENGINE_RETIRED reason=LEASE_REQUESTED engines=0", "ENGINE_STARTED engines=1", "LEASE_OPENED leases=1"), f.events)
         // The revoked job lease still closes once, confirmed, without touching the shared engine.
         job.close()
+        assertEquals("LEASE_CLOSED leases=0 engine=RETIRED", f.events.last())
         assertEquals(1, f.bound.single().leaseCloses); assertEquals(1, f.bound.single().closes)
         assertEquals(0, f.shared.single().closes); assertEquals(1, f.owner.engineCount())
         // A later job lease joins the shared engine.

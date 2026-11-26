@@ -75,8 +75,17 @@ role, `ENGINE_STARTED`/`ENGINE_RETIRED` with the engine count, `LEASE_OPENED`
 with the lease count, or `ENGINE_CLEANUP_UNCONFIRMED`. Job leases add
 `JOB_LEASE_JOINED engine=SHARED|JOB`, `JOB_ENGINE_STARTED engines=…`,
 `JOB_ENGINE_RETIRED reason=RELEASED|LEASE_REQUESTED engines=…` and
-`JOB_LEASE_REFUSED reason=CONFLICT|CLEANUP_UNCONFIRMED`. No configuration, key,
-host or `Network` is logged. Only the ordinary process (`process=main`) starts
+`JOB_LEASE_REFUSED reason=CONFLICT|CLEANUP_UNCONFIRMED`. Every lease close logs
+`LEASE_CLOSED leases=…`, with `engine=RETIRED` for a lease whose job-bound
+engine an ordinary lease already retired. An unconfirmed lease close logs
+`LEASE_CLOSE_UNCONFIRMED reason=…`: in the owner, `TIMEOUT`, `FAILED`,
+`REJECTED` or `INTERRUPTED`; in the leasing process, `OWNER_UNCONFIRMED`,
+`NO_REPLY` or `RELEASE_FAILED`. The owner now allows a lease close up to 4 s,
+inside the leasing process's 5 s wait for its verdict, rather than 2 s.
+The approval browser logs the first failed step of an unconfirmed cleanup as
+`CLEANUP_UNCONFIRMED check=…` under `TachiaiAbemaApproval`, for example
+`ROUTE_CLOSE detail=BACKEND` or `REGION_CHECK detail=REQUEST_RUNNING`.
+No configuration, key, host or `Network` is logged. Only the ordinary process (`process=main`) starts
 engines; an engine event from another process would be a second device.
 
 Every connection a route's loopback bridge refuses is also logged, as a warning

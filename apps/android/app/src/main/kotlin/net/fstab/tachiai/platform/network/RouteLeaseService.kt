@@ -73,7 +73,7 @@ class RouteLeaseService : Service() {
                 runCatching { reply.binder.unlinkToDeath(session.death, 0) }
                 if (confirmed) { if (sessions[request.nonce] === session) sessions.remove(request.nonce) }
                 else retained.add(session)
-            } })
+            } }, log = RouteEngineOwner::event)
         session = Session(grant, reply, IBinder.DeathRecipient { grant.end() })
         try { reply.binder.linkToDeath(session.death, 0) } catch (_: Throwable) { return }
         sessions[request.nonce] = session
@@ -153,10 +153,11 @@ internal fun installRouteLeaseSource(context: Context) {
     if (Build.VERSION.SDK_INT < 28 || !routeLeasesFromOwner(Application.getProcessName(), context.packageName)) return
     val application = context.applicationContext
     WireGuardRouteProtocol.leases = { profile, security, preparation ->
-        RemoteRouteLeaseBackend.open(AndroidRouteLeaseChannel(application), profile, security, preparation, SystemClock::elapsedRealtime)
+        RemoteRouteLeaseBackend.open(AndroidRouteLeaseChannel(application), profile, security, preparation,
+            SystemClock::elapsedRealtime, log = RouteEngineOwner::event)
     }
     WireGuardRouteProtocol.jobLeases = { profile, security, preparation, job ->
         RemoteRouteLeaseBackend.open(AndroidRouteLeaseChannel(application), profile, security, preparation,
-            SystemClock::elapsedRealtime, job = job)
+            SystemClock::elapsedRealtime, job = job, log = RouteEngineOwner::event)
     }
 }

@@ -111,8 +111,12 @@ internal class RouteLeaseGrant(
     private val send: (Int, Map<String, Any>) -> Unit,
     private val execute: (Runnable) -> Unit,
     private val now: () -> Long,
-    private val closeMs: Long = 2000,
+    // Inside the client's IPC_MS wait for CLOSED, so a slow but completed
+    // close is still reported as confirmed (#275 stage 5).
+    private val closeMs: Long = RouteLeaseIpc.IPC_MS - 1000,
     private val closed: (Boolean) -> Unit = {},
+    // Closed reason for an unconfirmed close; never a host or credential.
+    private val log: (String) -> Unit = {},
 ) {
     private enum class State { GRANTING, READY, ENDING }
     private val lock = Any()
@@ -149,17 +153,26 @@ internal class RouteLeaseGrant(
 
     private fun onWorker(action: () -> Unit) {
         try { execute(Runnable(action)) }
-        catch (_: Throwable) { reply(RouteLeaseIpc.CLOSED, mapOf("confirmed" to false)); closed(false) }
+        catch (_: Throwable) {
+            log("LEASE_CLOSE_UNCONFIRMED reason=REJECTED")
+            reply(RouteLeaseIpc.CLOSED, mapOf("confirmed" to false)); closed(false)
+        }
     }
 
     private fun finish(held: RouteBackend?) {
-        val confirmed = held == null || runCatching {
+        val failure = if (held == null) null else try {
             val task = FutureTask { held.close() }
             execute(task)
             task.get(closeMs, TimeUnit.MILLISECONDS)
-        }.isSuccess
-        reply(RouteLeaseIpc.CLOSED, mapOf("confirmed" to confirmed))
-        closed(confirmed)
+            null
+        } catch (_: java.util.concurrent.TimeoutException) { "TIMEOUT" }
+        catch (_: java.util.concurrent.ExecutionException) { "FAILED" }
+        catch (error: Throwable) {
+            if (error is InterruptedException) { Thread.currentThread().interrupt(); "INTERRUPTED" } else "REJECTED"
+        }
+        failure?.let { log("LEASE_CLOSE_UNCONFIRMED reason=$it") }
+        reply(RouteLeaseIpc.CLOSED, mapOf("confirmed" to (failure == null)))
+        closed(failure == null)
     }
 
     private fun reply(what: Int, extra: Map<String, Any> = emptyMap()) = synchronized(lock) {
@@ -191,6 +204,8 @@ internal class RemoteRouteLeaseBackend private constructor(
     private val request: RouteLeaseIpc.Open,
     private val now: () -> Long,
     private val waitMs: Long,
+    // Closed reason for an unconfirmed close; never a host or credential.
+    private val log: (String) -> Unit,
 ) : RouteBackend, RouteLeaseChannel.Events {
     companion object {
         private val retained = ConcurrentLinkedQueue<Any>()
@@ -198,14 +213,14 @@ internal class RemoteRouteLeaseBackend private constructor(
 
         fun open(channel: RouteLeaseChannel, profile: ConnectionProfile, security: RouteProxySecurity,
             preparation: RoutePreparation, now: () -> Long, waitMs: Long = RouteLeaseIpc.IPC_MS,
-            job: RouteJobNetwork? = null): RouteBackend {
+            job: RouteJobNetwork? = null, log: (String) -> Unit = {}): RouteBackend {
             preparation.checkActive()
             val purpose = checkNotNull(security.purpose)
             check(profile.protocol === WireGuardRouteProtocol && purpose.allowedHosts == security.allowedHosts)
             val nonce = ByteArray(16).also(random::nextBytes).joinToString("") { "%02x".format(it) }
             val request = RouteLeaseIpc.Open(nonce, routeConfigurationKey(profile), purpose,
                 security.username, security.password, security.realm, now() + waitMs, job)
-            val lease = RemoteRouteLeaseBackend(channel, request, now, waitMs)
+            val lease = RemoteRouteLeaseBackend(channel, request, now, waitMs, log)
             var hook: AutoCloseable? = null
             try {
                 hook = preparation.onCancel(lease::cancel)
@@ -289,9 +304,16 @@ internal class RemoteRouteLeaseBackend private constructor(
             try { done.await(waitMs, TimeUnit.MILLISECONDS) }
             catch (_: InterruptedException) { Thread.currentThread().interrupt() }
         }
-        val confirmed = synchronized(lock) { !opened || ownerGone || closedConfirmed == true }
+        val (confirmed, reply) = synchronized(lock) { (!opened || ownerGone || closedConfirmed == true) to closedConfirmed }
         val released = runCatching { channel.release() }.isSuccess
-        if (!confirmed || !released) { retained.add(this); throw IOException("Route lease cleanup unconfirmed") }
+        if (!confirmed || !released) {
+            log("LEASE_CLOSE_UNCONFIRMED reason=" + when {
+                !confirmed && reply == false -> "OWNER_UNCONFIRMED"
+                !confirmed -> "NO_REPLY"
+                else -> "RELEASE_FAILED"
+            })
+            retained.add(this); throw IOException("Route lease cleanup unconfirmed")
+        }
     }
 
     override fun toString() = "RemoteRouteLeaseBackend(secrets hidden)"

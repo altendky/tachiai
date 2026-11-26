@@ -50,7 +50,9 @@ internal class RouteEngineOwner(
                 android.app.Application.getProcessName().substringAfter(':', "main") else "unknown" }.getOrDefault("unknown")
                 .takeIf { it.matches(Regex("[A-Za-z0-9_]{1,40}")) } ?: "unknown"
         }
-        val shared = RouteEngineOwner(log = { event -> android.util.Log.i("TachiaiRouteEngine", "process=$role $event") })
+        // Closed lifecycle events only, under this process's role.
+        internal fun event(text: String) { runCatching { android.util.Log.i("TachiaiRouteEngine", "process=$role $text") } }
+        val shared = RouteEngineOwner(log = ::event)
     }
     // Thrown by a job-bound engine factory whose failed start left native
     // cleanup unconfirmed; the identity is then blocked like a failed close.
@@ -144,11 +146,12 @@ internal class RouteEngineOwner(
     }
 
     private fun release(conflict: String, entry: Entry) {
-        val generation = synchronized(lock) {
-            entry.leases--
-            if (entry.leases > 0) return
-            entry.generation
+        val (generation, left, current) = synchronized(lock) {
+            entry.leases--; Triple(entry.generation, entry.leases, entries[conflict] === entry)
         }
+        // A lease of an engine already retired for an ordinary lease says so.
+        log("LEASE_CLOSED leases=$left" + if (current) "" else " engine=RETIRED")
+        if (left > 0) return
         if (!entry.job) { schedule(idleMs) { retireIfIdle(conflict, entry, generation) }; return }
         // A job-bound engine's Network ends with the job: retire it now. An
         // engine already retired for an ordinary lease needs no gate wait.

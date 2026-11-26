@@ -210,7 +210,11 @@ What is retained:
 - **Manifest continuity.** The bounded manifest normalizer keeps timeline
   entries and periods the provider dropped, but only while the rendition in use
   has them cached. It widens the window to match, and the declared-media
-  allowlist admits only those retained segments.
+  allowlist admits only those retained segments. While the feed plays older
+  than the provider's window (or within 10 s of its start), adaptive selection
+  stays on the recorded rendition
+  ([#711](https://github.com/altendky/tachiai/issues/711)), so the player never
+  asks for an older segment of a rendition that was not recorded.
 - **Playlist continuity (Twitch).** The HLS recorder keeps segments Twitch
   dropped from a live media playlist in the playlist the player reads, with
   their original duration, date and discontinuity, only while their bodies are

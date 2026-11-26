@@ -28,6 +28,7 @@ import androidx.media3.exoplayer.drm.FrameworkMediaDrm
 import androidx.media3.exoplayer.drm.KeyRequestInfo
 import androidx.media3.exoplayer.drm.MediaDrmCallback
 import androidx.media3.exoplayer.drm.MediaDrmCallbackException
+import androidx.media3.exoplayer.trackselection.AdaptiveTrackSelection
 import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import androidx.media3.exoplayer.upstream.ParsingLoadable
 import androidx.media3.exoplayer.source.MediaSource
@@ -110,7 +111,9 @@ internal class BoundedNativeDashPlayer(
         transportObserver = transportObserver)
         .also { owned -> cleanup.own(20) { owned.close() } }
     val player: ExoPlayer
-    private val quality = NativePlayerQuality(context).also { owned -> cleanup.own(40, ownerThread = true) {
+    private val quality = NativePlayerQuality(context,
+        liveCache?.let { cache -> NativeRecordedRenditionSelectionFactory(cache::recordedRendition) }
+            ?: AdaptiveTrackSelection.Factory()).also { owned -> cleanup.own(40, ownerThread = true) {
         observeNativeFailure(NativeFailureStage.QUALITY_RELEASE, observedFailure) { owned.close() }
     } }
 
@@ -271,7 +274,15 @@ internal class BoundedNativeDashPlayer(
         if (!player.isCurrentMediaItemDynamic) return
         nativeBehindLiveMs(player.currentLiveOffset.takeIf { it != C.TIME_UNSET },
             player.duration.takeIf { it != C.TIME_UNSET }, player.currentPosition)?.let(cache::setBehindLiveMs)
+        // #711: closed record of when adaptive selection is held on the
+        // recorded rendition, and its bandwidth only.
+        val pinned = cache.recordedRendition(C.TRACK_TYPE_VIDEO)
+        if ((pinned != null) != recordedRenditionPinned) {
+            recordedRenditionPinned = pinned != null
+            android.util.Log.d("TachiaiLiveRewind", "recordedRendition pinned=${pinned != null} bandwidth=${pinned?.bandwidth}")
+        }
     }
+    private var recordedRenditionPinned = false
 
     fun start(uri: URI, playWhenReady: Boolean = true) {
         check(!released && uri == manifestUri && Looper.myLooper() == player.applicationLooper)

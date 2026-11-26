@@ -149,6 +149,15 @@ internal class NativeLiveSegmentCache(
 
     fun cached(uri: URI): Boolean = synchronized(lock) { !closed && uri in bodies }
 
+    // #711: while the feed plays older than (or within 10 s of) the start of
+    // the provider's window, the rendition recorded for this track type; the
+    // player stays on it. Null near live, where adaptive selection is free.
+    fun recordedRendition(trackType: Int): NativeRecordedRendition? = synchronized(lock) {
+        if (closed || providerWindowMs <= 0 || behindLiveMs <= providerWindowMs - RECORDED_RENDITION_MARGIN_MS)
+            return null
+        activeRendition[trackType]?.let { (id, bandwidth) -> NativeRecordedRendition(id, bandwidth) }
+    }
+
     fun put(uri: URI, body: ByteArray) {
         if (body.isEmpty() || body.size > maxBytes) return
         synchronized(lock) { if (closed || uri !in declared || uri in bodies) return }
@@ -297,4 +306,5 @@ internal class NativeLiveSegmentCache(
     }
 }
 
+private const val RECORDED_RENDITION_MARGIN_MS = 10_000L
 private const val RECORDING_THREADS = 2

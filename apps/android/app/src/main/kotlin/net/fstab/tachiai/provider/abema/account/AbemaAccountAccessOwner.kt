@@ -212,12 +212,14 @@ internal class AbemaAccountAccessOwner(
         if (!cheap(value, attachment)) return null
         // Which durable step refused, as a closed cause (#729).
         var cause = "OWNER_CHECK_FAILED"
-        val checked = try {
+        var checkedRead: AbemaAccountSnapshot? = null
+        fun attempt(): Proof? = try {
+            checkedRead = null
             val owned = ownerCurrent()
             val first = if (owned) currentProof(value, attachment) else null
             cause = if (!owned) "OWNER_MISMATCH route=${routeCause()}" else if (first == null) "PROOF_LOST" else "READ_FAILED"
             val read = if (first == null) null else store.readSnapshot()
-            if (read != null) cause = "STORE_MISMATCH"
+            if (read != null) { cause = "STORE_MISMATCH"; checkedRead = read }
             val current = if (read == null || read.revision == first?.snapshot?.revision) first
                 else currentProof(value, attachment)
             current?.takeIf { read != null &&
@@ -227,6 +229,17 @@ internal class AbemaAccountAccessOwner(
         } catch (_: Throwable) {
             if (cause == "READ_FAILED") cause = "READ_FAILED store=${store.lastChange()?.name ?: "NONE"}"
             null
+        }
+        var checked = attempt()
+        // A same-account renewal adopted after this check read the store made
+        // that read obsolete (#729). Check the renewed record once instead of
+        // revoking the shared proof; any other change, or a second renewal
+        // during the repeat, still fails closed.
+        val obsolete = checkedRead
+        if (checked == null && cause == "STORE_MISMATCH" && obsolete != null && attachment.active() &&
+            runCatching { store.successor(obsolete) != null }.getOrDefault(false)) {
+            emit("DURABLE_RENEWED")
+            checked = attempt()
         }
         val okay = checked != null
         if (!okay && attachment.active()) {

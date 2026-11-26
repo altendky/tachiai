@@ -20,18 +20,36 @@ internal fun acquireAbemaAccountCheckLock(lock: ReentrantLock, timeoutMs: Long):
 internal data class AbemaAccountCheckWait(val completed: Boolean, val interrupted: Boolean)
 internal data class AbemaAccountCheckCompletion(val accepted: Boolean, val interrupted: Boolean)
 
+// Serialized checks of one lease. A caller that queued behind other checks may
+// adopt an accepted CHECK dispatched after it began (#729): that service-side
+// verification read the protected state no earlier than the caller's own
+// CHECK would have, so the coalesced caller is admitted on equal evidence.
+internal class AbemaAccountCheckHistory {
+    private val tickets = java.util.concurrent.atomic.AtomicLong()
+    @Volatile private var accepted = 0L
+    fun ticket(): Long = tickets.incrementAndGet()
+    fun accept(ticket: Long) { if (ticket > accepted) accepted = ticket }
+    // An accepted CHECK was dispatched after the caller holding [ticket] began.
+    fun covers(ticket: Long) = accepted > ticket
+}
+
 // The Android client retains IPC dispatch, exact reply validation and lease
 // validity. This owns their serialized operation and cleanup boundary.
+// queueMs bounds the wait for the serialized lock; each dispatched CHECK then
+// has its own replyMs, so time spent queued never shortens a remote reply.
 internal fun performAbemaAccountCheck(
     lock: ReentrantLock,
-    timeoutMs: Long,
+    queueMs: Long,
     nowMs: () -> Long,
     current: () -> Boolean,
-    dispatch: (beganMs: Long, remainingMs: Long) -> AbemaAccountCheckCompletion,
+    dispatch: (dispatchedMs: Long, replyMs: Long) -> AbemaAccountCheckCompletion,
     revoke: () -> Unit,
+    replyMs: Long = queueMs,
+    history: AbemaAccountCheckHistory? = null,
 ): Boolean {
     val start = nowMs()
-    when (acquireAbemaAccountCheckLock(lock, timeoutMs)) {
+    val ticket = history?.ticket()
+    when (acquireAbemaAccountCheckLock(lock, queueMs)) {
         AbemaAccountCheckLock.INTERRUPTED -> return false
         AbemaAccountCheckLock.TIMED_OUT -> return false
         AbemaAccountCheckLock.ACQUIRED -> Unit
@@ -40,14 +58,15 @@ internal fun performAbemaAccountCheck(
         if (Thread.currentThread().isInterrupted) return false
         val now = nowMs()
         if (now < start) { revoke(); return false }
-        val left = timeoutMs - (now - start)
         // Queueing can consume this caller's budget without creating a remote
         // operation. Only dispatched uncertainty or lost validity owns revoke.
-        if (left <= 0) return false
+        if (queueMs - (now - start) <= 0) return false
         if (!current()) { revoke(); return false }
-        val completion = dispatch(start, left)
+        if (ticket != null && history.covers(ticket)) return current() && !Thread.currentThread().isInterrupted
+        val dispatched = history?.ticket()
+        val completion = dispatch(now, replyMs)
         val okay = completion.accepted && current()
-        if (!okay) revoke()
+        if (!okay) revoke() else if (dispatched != null) history.accept(dispatched)
         return okay && !completion.interrupted && !Thread.currentThread().isInterrupted
     } finally { lock.unlock() }
 }

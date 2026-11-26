@@ -904,7 +904,11 @@ Replays and on-demand items remember where you were
   2:14:05…". Once the resumed feeds play, a brief notice says where:
   "Resumed at 2:14:05. Start over is in ⋯ More." or, in a pair, "Resumed A at
   2:14:05, B at 2:14:17. …". A saved position beyond the item's current
-  length resumes just before its end.
+  length resumes just before its end. A resume keeps waiting while its
+  position is still loading
+  ([#747](https://github.com/altendky/tachiai/issues/747)). One that stops
+  loading for 8 s, or hasn't arrived after 30 s, reads "The feed did not
+  finish preparing in time." with Retry.
 - **No finished threshold or expiry** (user decision): reopening always
   resumes at the saved position. A position saved at the very end therefore
   plays out at once into the ended pane's **Play again**; that is accepted for

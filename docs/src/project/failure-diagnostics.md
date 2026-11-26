@@ -875,6 +875,36 @@ only fixed names, counts and milliseconds:
 
 Capture `TachiaiStoreReads` together with the tags listed above.
 
+## Replay resume loading — 2026-11-26
+
+On the `tachiai-dev` emulator, a replay joining a playing replay pair at a
+mid-episode saved position failed in 6 of 8 joins. Each failure came 8.3–9.1 s
+after `READY` with `failure=PLAYER_FAILED`, no player failure record and
+`autoRecovery=SKIPPED`, while the player was still buffering at the saved
+position ([#747](https://github.com/altendky/tachiai/issues/747)). A fixed 8 s
+wait from the resume seek had expired, and it was reported as a player error.
+
+The wait now follows loading progress. Each increase of the player's buffered
+position since the seek restarts an 8 s stall window. A resume that makes no
+progress for 8 s, or has not arrived 30 s after its seek, fails as
+`PREPARATION_TIMEOUT` ("The feed did not finish preparing in time.") with
+Retry. That reason keeps its existing automatic-recovery rule: it continues
+an automatic recovery attempt's bounded backoff, but never starts one. This
+applies to every resume seek: a first start, Retry, automatic recovery and a
+route switch.
+
+Closed lines under `TachiaiPrototype` record each resume:
+`slot=… replayResume=SEEKING saved=…` when the seek is issued, then
+`replayResume=AT_TARGET`, `STALLED` or `TIMED_OUT` with
+`elapsedMs=… progressAgeMs=… progress=…`. `progress` counts the samples whose
+buffered position increased. No position, item identity, URL or host is
+logged.
+
+The live initial catch-up wait (`LIVE_POSITION_FAILED`) has the same shape: a
+fixed 8 s wait from its seek to the live default position, checked while the
+player may still be buffering. It is unchanged, because live positions are
+relative to a moving window and no failures from it have been observed.
+
 ## Collecting one device's evidence
 
 Verify the requested device before collecting. For the persistent emulator,

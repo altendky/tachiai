@@ -43,6 +43,8 @@ import net.fstab.tachiai.feature.connections.sourceSetupStore
 import net.fstab.tachiai.feature.connections.pairOffsetStore
 import net.fstab.tachiai.feature.connections.replayPositionStore
 import net.fstab.tachiai.presentation.ReplayPositionSaver
+import net.fstab.tachiai.presentation.ReplayResumeLoad
+import net.fstab.tachiai.presentation.ReplayResumeStatus
 import net.fstab.tachiai.presentation.ReplayResumed
 import net.fstab.tachiai.presentation.START_OVER_MS
 import net.fstab.tachiai.presentation.formatPlaybackTime
@@ -381,7 +383,8 @@ open class PrototypeActivity : ComponentActivity() {
         val sibling: NativePairMember)
     private var retryPlaybackStart: RetryPlaybackStart? = null
     private val retryDeadline = LongArray(2)
-    private val replayRestoreTarget = arrayOfNulls<Long>(2)
+    // A replay's seek to its resume position, until the slot prepares (#747).
+    private val replayResumeLoads = arrayOfNulls<ReplayResumeLoad>(2)
     // Remembered replay positions (#655 part 2). Keys are null outside a replay
     // view. A saved position is resumed until the slot first prepares.
     private var replayPositionKeys: List<String?> = listOf(null, null)
@@ -764,7 +767,7 @@ open class PrototypeActivity : ComponentActivity() {
         loadPairOffset(selected, run)
         loadReplayPositions(selected, run)
         failures.fill(null); prepared.fill(false); initialCatchUp.fill(false); catchUpDeadline.fill(0)
-        feedRetries = List(2) { FeedRetryState() }; retryDeadline.fill(0); replayRestoreTarget.fill(null)
+        feedRetries = List(2) { FeedRetryState() }; retryDeadline.fill(0); replayResumeLoads.fill(null)
         automaticRecovery = List(2) { FeedAutoRecoveryState() }; retryAccountReady.fill(false)
         waiting = List(2) { FeedWaitingState() }; waitingLookup.fill(false); airing = List(2) { FeedAiringLookup() }
         retryIntentPolicy = ViewerRetryIntentPolicy()
@@ -1232,7 +1235,7 @@ open class PrototypeActivity : ComponentActivity() {
                         else -> message
                     }
                 }
-                    ?: if (!prepared[index]) replayRestoreTarget[index]?.takeIf { replayResumeFromSaved[index] }
+                    ?: if (!prepared[index]) replayResumeLoads[index]?.targetMs?.takeIf { replayResumeFromSaved[index] }
                         ?.let { "Resuming at ${formatPlaybackTime(it)}…" } ?: "Preparing this feed…" else null
             }, feedRecovery = { side ->
                 val index = side.ordinal
@@ -1886,8 +1889,16 @@ open class PrototypeActivity : ComponentActivity() {
     }
 
     private fun prepareViewerSlot(index: Int, host: PrototypeFeedSession) {
-        if (replayRestoreTarget[index] != null && SystemClock.elapsedRealtime() >= catchUpDeadline[index]) {
-            failFeed(index, PrototypeFeedFailure(PrototypeFailureReason.PLAYER_FAILED)); return
+        // A resume is bounded by its loading progress, checked before the
+        // player is ready because its seek returns the player to buffering.
+        val resumeStatus = replayResumeLoads[index]?.let { load ->
+            val now = SystemClock.elapsedRealtime()
+            val status = load.observe(now, host.member?.timingSnapshot())
+            if (status == ReplayResumeStatus.STALLED || status == ReplayResumeStatus.TIMED_OUT) {
+                Log.d("TachiaiPrototype", "slot=${NativeMixedSide.entries[index].name} replayResume=${status.name} ${load.summary(now)}")
+                failFeed(index, load.failure()); return
+            }
+            status
         }
         if (initialCatchUp[index] && SystemClock.elapsedRealtime() >= catchUpDeadline[index]) {
             failFeed(index, PrototypeFeedFailure(PrototypeFailureReason.LIVE_POSITION_FAILED)); return
@@ -1901,8 +1912,7 @@ open class PrototypeActivity : ComponentActivity() {
         if (replay && replayPositionsLoading && replayPositionKeys.getOrNull(index) != null) return
         val resume = if (replay) replayResumeTargetMs(retry.retrying, retry.replayPositionMs, savedReplayResume[index]) else null
         if (resume != null) {
-            val target = replayRestoreTarget[index]
-            if (target == null) {
+            if (resumeStatus == null) {
                 val duration = snapshot.durationMs ?: return
                 if (duration <= 0) return
                 val requested = resume.coerceIn(0, duration - 1)
@@ -1910,15 +1920,17 @@ open class PrototypeActivity : ComponentActivity() {
                 if (plan.outcome !in setOf(NativeSeekOutcome.REQUESTED, NativeSeekOutcome.NO_CHANGE) || plan.targetMs != requested) {
                     failFeed(index, PrototypeFeedFailure(PrototypeFailureReason.PLAYER_FAILED)); return
                 }
-                replayRestoreTarget[index] = requested
+                replayResumeLoads[index] = ReplayResumeLoad(requested, SystemClock.elapsedRealtime())
                 replayResumeFromSaved[index] = !(retry.retrying && retry.replayPositionMs != null)
-                catchUpDeadline[index] = SystemClock.elapsedRealtime() + 8_000
+                Log.d("TachiaiPrototype", "slot=${NativeMixedSide.entries[index].name} replayResume=SEEKING" +
+                    " saved=${replayResumeFromSaved[index]}")
                 return
             }
-            if (SystemClock.elapsedRealtime() >= catchUpDeadline[index]) {
-                failFeed(index, PrototypeFeedFailure(PrototypeFailureReason.PLAYER_FAILED)); return
+            if (resumeStatus != ReplayResumeStatus.AT_TARGET) return
+            replayResumeLoads[index]?.let { load ->
+                Log.d("TachiaiPrototype", "slot=${NativeMixedSide.entries[index].name} replayResume=AT_TARGET" +
+                    " ${load.summary(SystemClock.elapsedRealtime())}")
             }
-            if (snapshot.positionMs == null || kotlin.math.abs(snapshot.positionMs - target) > 1_000) return
         }
         if (!initialCatchUp[index] && (snapshot.live || snapshot.dynamic)) {
             initialCatchUp[index] = true
@@ -1933,7 +1945,7 @@ open class PrototypeActivity : ComponentActivity() {
                 snapshot.durationMs <= 0 || snapshot.positionMs !in 0..snapshot.durationMs)) return
         prepared[index] = true
         retry.ready()
-        if (replayResumeFromSaved[index] && savedReplayResume[index] != null) replayRestoreTarget[index]?.let { target ->
+        if (replayResumeFromSaved[index] && savedReplayResume[index] != null) replayResumeLoads[index]?.targetMs?.let { target ->
             replayResumed[index] = ReplayResumed(target, snapshot.durationMs ?: target)
             replayResumeNoticePending = true
         }
@@ -2752,7 +2764,7 @@ open class PrototypeActivity : ComponentActivity() {
             }
             failures[index] = null
             prepared[index] = false; initialCatchUp[index] = false; catchUpDeadline[index] = 0
-            replayRestoreTarget[index] = null
+            replayResumeLoads[index] = null
             createFeeds(selected, currentBudget, epoch.get(), setup, setOf(source.service), setOf(index))
         }
     }

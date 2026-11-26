@@ -35,7 +35,10 @@ internal class ConfiguredSourceStore(
         require(validProviderInstanceId(instanceId))
         require(providerId.value.matches(Regex("[a-z][a-z0-9_-]{0,31}")))
     }
-    companion object { private val lock = Any() }
+    // Version 2 (#713) adds each item's listed length and a broadcast's real
+    // replay length; version 1 records stay readable and are rewritten as
+    // version 2 only by the next mutation.
+    companion object { private val lock = Any(); const val RECORD_VERSION = 2 }
     private fun <T> locked(action: () -> T): T = synchronized(lock) {
         val file = lockFile
         if (file == null) action() else RandomAccessFile(file, "rw").use { handle ->
@@ -49,7 +52,7 @@ internal class ConfiguredSourceStore(
         val bytes = store.read() ?: return validate(legacy().toList()).also { encode(it) }
         check(bytes.size <= PRIVATE_SECRET_LIMIT)
         val saved = DataInputStream(ByteArrayInputStream(bytes)).use { input ->
-            check(input.readInt() == 1)
+            val version = input.readInt(); check(version in 1..RECORD_VERSION)
             check(input.readUTF() == instanceId && input.readUTF() == providerId.value)
             val count = input.readInt(); check(count in 0..MAX_CONFIGURED_SOURCES)
             fun marker() = input.readUnsignedByte().also { check(it in 0..1) } == 1
@@ -67,8 +70,11 @@ internal class ConfiguredSourceStore(
                 val resource = CatalogResource(providerId, input.readUTF(), input.readUTF(), CatalogIntent.valueOf(input.readUTF()))
                 val title = input.readUTF(); val availability = CatalogAvailability.valueOf(input.readUTF())
                 val start = if (marker()) input.readLong() else null
+                // Version 1 records hold no lengths.
+                fun length() = if (version >= 2 && marker()) input.readInt().toLong() else null
+                val duration = length(); val replay = length()
                 val quality = NativeQualityPreferences(request(NativeQualityKind.VIDEO), request(NativeQualityKind.AUDIO))
-                ConfiguredSource(id, instanceId, CatalogEntry(resource, title, availability, start), quality)
+                ConfiguredSource(id, instanceId, CatalogEntry(resource, title, availability, start, duration), quality, replay)
             }
             check(input.read() == -1)
             validate(entries)
@@ -87,10 +93,11 @@ internal class ConfiguredSourceStore(
         return entries
     }
 
-    fun add(entry: CatalogEntry, legacy: () -> List<ConfiguredSource>): List<ConfiguredSource> = mutate(legacy) { entries ->
+    fun add(entry: CatalogEntry, legacy: () -> List<ConfiguredSource>) = add(entry, null, legacy)
+    fun add(entry: CatalogEntry, replayLengthSeconds: Long?, legacy: () -> List<ConfiguredSource>): List<ConfiguredSource> = mutate(legacy) { entries ->
         require(entry.resource.providerId == providerId)
         if (entries.any { it.entry.resource == entry.resource }) entries
-        else entries + ConfiguredSource(UUID.randomUUID().toString(), instanceId, entry)
+        else entries + ConfiguredSource(UUID.randomUUID().toString(), instanceId, entry, replayLengthSeconds = replayLengthSeconds)
     }
 
     fun remove(id: String, legacy: () -> List<ConfiguredSource>): List<ConfiguredSource> = mutate(legacy) { entries ->
@@ -109,10 +116,26 @@ internal class ConfiguredSourceStore(
         entries.toMutableList().apply { val moved = removeAt(index); add(index + delta, moved) }
     }
 
-    fun refresh(id: String, entry: CatalogEntry, legacy: () -> List<ConfiguredSource>): List<ConfiguredSource> = mutate(legacy) { entries ->
+    fun refresh(id: String, entry: CatalogEntry, legacy: () -> List<ConfiguredSource>) = refresh(id, entry, null, legacy)
+    // A known real replay length is kept unless a newer one is given.
+    fun refresh(id: String, entry: CatalogEntry, replayLengthSeconds: Long?,
+        legacy: () -> List<ConfiguredSource>): List<ConfiguredSource> = mutate(legacy) { entries ->
         val existing = entries.single { it.id == id }
         check(existing.entry.resource == entry.resource)
-        entries.map { if (it.id == id) it.copy(entry = entry) else it }
+        entries.map { if (it.id == id) it.copy(entry = entry, replayLengthSeconds = replayLengthSeconds ?: it.replayLengthSeconds) else it }
+    }
+
+    // Saves real replay lengths read for configured broadcasts lacking one.
+    // Writes only when a length is new; removed items are not recreated.
+    fun recordReplayLengths(lengths: Map<CatalogResource, Long>, legacy: () -> List<ConfiguredSource>): List<ConfiguredSource> = locked {
+        val entries = readUnlocked(legacy)
+        val updated = entries.map { source ->
+            lengths[source.entry.resource]?.takeIf { source.replayLengthSeconds == null &&
+                source.entry.resource.intent == CatalogIntent.BROADCAST && it in 1..MAX_CATALOG_DURATION_SECONDS }
+                ?.let { source.copy(replayLengthSeconds = it) } ?: source
+        }
+        if (updated != entries) store.write(encode(validate(updated)))
+        updated
     }
 
     fun saveQuality(id: String, kind: NativeQualityKind, request: NativeQualityRequest,
@@ -129,7 +152,7 @@ internal class ConfiguredSourceStore(
 
     private fun encode(entries: List<ConfiguredSource>): ByteArray {
         val bytes = ByteArrayOutputStream().also { output -> DataOutputStream(output).use { data ->
-            data.writeInt(1); data.writeUTF(instanceId); data.writeUTF(providerId.value); data.writeInt(entries.size)
+            data.writeInt(RECORD_VERSION); data.writeUTF(instanceId); data.writeUTF(providerId.value); data.writeInt(entries.size)
             fun request(value: NativeQualityRequest) {
                 val track = value.track
                 data.writeBoolean(track != null)
@@ -144,6 +167,10 @@ internal class ConfiguredSourceStore(
                 data.writeUTF(source.id); data.writeUTF(resource.kind); data.writeUTF(resource.identity); data.writeUTF(resource.intent.name)
                 data.writeUTF(entry.title); data.writeUTF(entry.availability.name)
                 data.writeBoolean(entry.scheduledStartEpochMs != null); entry.scheduledStartEpochMs?.let(data::writeLong)
+                // Lengths are bounded by MAX_CATALOG_DURATION_SECONDS, so an Int holds them.
+                for (length in listOf(entry.durationSeconds, source.replayLengthSeconds)) {
+                    data.writeBoolean(length != null); length?.let { data.writeInt(it.toInt()) }
+                }
                 request(source.quality.video); request(source.quality.audio)
             }
         } }.toByteArray()

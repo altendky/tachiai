@@ -31,6 +31,10 @@ internal data class NativePlaybackDiagnosticSnapshot(
     val durationMs: Long? = null,
     val bufferedMs: Long? = null,
     val httpFailure: NativePlaybackHttpFailure? = null,
+    // #722: the fatal player error's text-free record, and how long ago the
+    // player last crossed or reshaped a DASH period boundary.
+    val playerFailure: NativePlayerFailure? = null,
+    val periodBoundaryAgeMs: Long? = null,
 )
 
 internal enum class NativePlaybackLivenessState {

@@ -1103,7 +1103,9 @@ Following the user's request on 2026-11-10, native viewing schedules recovery
 independently for either or both selected feeds after eligible failures during
 actual playback. A recent media DNS/connect/timeout or plain I/O failure,
 transient HTTP response, or expired live window can start a bounded retry burst.
-There are at most three automatic attempts, delayed by one, three and ten
+So can a live source I/O error (2000) within a minute of a DASH period boundary
+such as an ad break, or after a live manifest refresh was refused as out of sync
+([#722](https://github.com/altendky/tachiai/issues/722)). There are at most three automatic attempts, delayed by one, three and ten
 seconds, and six attempts per ten-minute interval. Only a minute of sustained
 clock/render progress resets the consecutive budget; READY alone does not.
 

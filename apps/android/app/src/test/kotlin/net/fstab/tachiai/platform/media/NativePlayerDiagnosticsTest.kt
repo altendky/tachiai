@@ -274,4 +274,29 @@ class NativePlayerDiagnosticsTest {
         assertEquals(150L, diagnostics.snapshot(released = true)?.sampleAgeMs)
         assertEquals(20L, diagnostics.snapshot(released = true)?.renderedFrames)
     }
+
+    // #722
+    @Test fun `diagnostics keep the first fatal player record and the last period boundary`() {
+        var now = 100L
+        val diagnostics = NativePlayerDiagnostics { now }
+        capture(diagnostics)
+        val stale = androidx.media3.exoplayer.ExoPlaybackException.createForSource(
+            androidx.media3.exoplayer.dash.DashManifestStaleException(), 2000)
+        assertNull(diagnostics.snapshot(released = false)?.periodBoundaryAgeMs)
+        // Only the player's own fatal error is recorded, not a request failure.
+        diagnostics.recordFailure(NativeFailureStage.MEDIA_REQUEST_OPEN, stale)
+        assertNull(diagnostics.snapshot(released = false)?.playerFailure)
+        diagnostics.recordPeriodBoundary()
+        now = 150
+        diagnostics.recordFailure(NativeFailureStage.PLAYER_ERROR, stale)
+        diagnostics.recordFailure(NativeFailureStage.PLAYER_ERROR,
+            androidx.media3.exoplayer.ExoPlaybackException.createForUnexpected(RuntimeException(), 1000))
+        now = 400
+        val snapshot = checkNotNull(diagnostics.snapshot(released = true))
+        val failure = checkNotNull(snapshot.playerFailure)
+        assertTrue(failure.manifestStale)
+        assertEquals(2000, failure.code)
+        assertEquals(NativePlayerFailureSource.SOURCE, failure.source)
+        assertEquals(300L, snapshot.periodBoundaryAgeMs)
+    }
 }

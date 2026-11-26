@@ -4,6 +4,8 @@ import net.fstab.tachiai.platform.media.NativeFailureStage
 import net.fstab.tachiai.platform.media.NativePlaybackDiagnosticSnapshot
 import net.fstab.tachiai.platform.media.NativePlaybackHttpFailure
 import net.fstab.tachiai.platform.media.NativePlaybackTransportFailure
+import net.fstab.tachiai.platform.media.NativePlayerFailure
+import net.fstab.tachiai.platform.media.NativePlayerFailureSource
 import net.fstab.tachiai.platform.network.ProviderTransportExceptionKind
 import net.fstab.tachiai.platform.network.ProviderTransportFailure
 
@@ -25,6 +27,8 @@ internal class FeedAutoRecoveryState {
         const val PROGRESS_GAP_MS = 2_000L
         const val ROLLING_MS = 600_000L
         const val ROLLING_ATTEMPTS = 6
+        // #722: a live source error this soon after a period boundary.
+        const val PERIOD_BOUNDARY_MS = 60_000L
     }
     var pending: FeedAutoRecoveryRequest? = null
         private set
@@ -149,8 +153,29 @@ internal class FeedAutoRecoveryState {
     private fun protectedHttpFailure(httpFailure: NativePlaybackHttpFailure?) =
         httpFailure?.let { it.ageMs in 0..RECENT_MS && it.status in setOf(401, 403) } == true
 
+    // #722: a live feed's unspecified IO source error at a DASH period
+    // boundary (an ad break), or after its manifest was refused as out of
+    // sync. Neither names a network cause, so no transport or HTTP evidence
+    // of any age may refuse recovery.
+    private fun periodBoundaryFailure(failure: PrototypeFeedFailure, player: NativePlayerFailure?,
+        periodBoundaryAgeMs: Long?, transport: NativePlaybackTransportFailure?,
+        httpFailure: NativePlaybackHttpFailure?): Boolean {
+        if (failure.playerCode != 2000 || player == null || player.code != 2000 ||
+            player.source != NativePlayerFailureSource.SOURCE) return false
+        if (!player.manifestStale && periodBoundaryAgeMs?.let { it in 0..PERIOD_BOUNDARY_MS } != true) return false
+        val evidence = transport?.evidence
+        if (evidence != null && (evidence.localCancellationRequested ||
+            evidence.failure in setOf(ProviderTransportFailure.TLS, ProviderTransportFailure.CANCELLED) ||
+            evidence.exceptionKind in setOf(ProviderTransportExceptionKind.TLS_HANDSHAKE,
+                ProviderTransportExceptionKind.TLS_PEER, ProviderTransportExceptionKind.TLS_OTHER,
+                ProviderTransportExceptionKind.INTERRUPTED_IO))) return false
+        return httpFailure == null || httpFailure.status !in setOf(401, 403) &&
+            (httpFailure.status in setOf(404, 408, 429) || httpFailure.status in 500..599)
+    }
+
     private fun eligible(failure: PrototypeFeedFailure, transport: NativePlaybackTransportFailure?,
-        live: Boolean, continuation: Boolean, httpFailure: NativePlaybackHttpFailure?): Boolean {
+        live: Boolean, continuation: Boolean, httpFailure: NativePlaybackHttpFailure?,
+        player: NativePlayerFailure?, periodBoundaryAgeMs: Long?): Boolean {
         if (failure.httpStatus in setOf(401, 403)) return false
         if (protectedHttpFailure(httpFailure)) return false
         val recent = transport?.takeIf { it.ageMs in 0..RECENT_MS }
@@ -167,7 +192,8 @@ internal class FeedAutoRecoveryState {
             PrototypeFailureReason.MEDIA_NOT_FOUND, PrototypeFailureReason.LIVE_WINDOW_EXPIRED,
             PrototypeFailureReason.LIVE_POSITION_FAILED -> live
             PrototypeFailureReason.PLAYER_FAILED -> live && failure.playerCode == 1002 ||
-                failure.playerCode == 2000 && (networkFailure(transport) || retryableHttpFailure(httpFailure, live))
+                failure.playerCode == 2000 && (networkFailure(transport) || retryableHttpFailure(httpFailure, live)) ||
+                live && periodBoundaryFailure(failure, player, periodBoundaryAgeMs, transport, httpFailure)
             PrototypeFailureReason.PREPARATION_TIMEOUT -> continuation
             else -> false
         }
@@ -177,7 +203,9 @@ internal class FeedAutoRecoveryState {
         live: Boolean, allowRecovery: Boolean, restoreOffset: Boolean, nowMs: Long,
         authorizationRefreshSupported: Boolean = false,
         httpFailure: NativePlaybackHttpFailure? = null,
-        transientAccountReadiness: Boolean = false): FeedAutoRecoveryDecision {
+        transientAccountReadiness: Boolean = false,
+        playerFailure: NativePlayerFailure? = null,
+        periodBoundaryAgeMs: Long? = null): FeedAutoRecoveryDecision {
         if (!time(nowMs)) return FeedAutoRecoveryDecision.SKIPPED
         // A player failure and an HTTP/provider failure are separate evidence;
         // mixed or misattributed numeric codes cannot grant retry authority.
@@ -211,7 +239,7 @@ internal class FeedAutoRecoveryState {
         val transientPreparation = failure.transientPreparation && continuation && !protectedRefusal &&
             failure.httpStatus == null && failure.playerCode == null
         if (!allowRecovery || !refresh && !transientAccount && !transientPreparation &&
-            !eligible(failure, transport, live, continuation, httpFailure) ||
+            !eligible(failure, transport, live, continuation, httpFailure, playerFailure, periodBoundaryAgeMs) ||
             !continuation && !played) {
             retire()
             return FeedAutoRecoveryDecision.SKIPPED

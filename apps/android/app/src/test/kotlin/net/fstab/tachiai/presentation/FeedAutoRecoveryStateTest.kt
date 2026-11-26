@@ -4,6 +4,8 @@ import net.fstab.tachiai.platform.media.NativeFailureStage
 import net.fstab.tachiai.platform.media.NativePlaybackDiagnosticSnapshot
 import net.fstab.tachiai.platform.media.NativePlaybackHttpFailure
 import net.fstab.tachiai.platform.media.NativePlaybackTransportFailure
+import net.fstab.tachiai.platform.media.NativePlayerFailure
+import net.fstab.tachiai.platform.media.NativePlayerFailureSource
 import net.fstab.tachiai.platform.media.latestNativePlaybackTransport
 import net.fstab.tachiai.platform.network.ProviderTransportEvidence
 import net.fstab.tachiai.platform.network.ProviderTransportExceptionKind
@@ -216,6 +218,88 @@ class FeedAutoRecoveryStateTest {
             state.observe(member, sample(0), 0)
             assertEquals(reason.name, expected, fail(state, member, 1, PrototypeFeedFailure(reason), evidence = null))
         }
+    }
+
+    // #722: ABEMA News on a Pixel 6 failed with 2000 22 s after an ad-to-
+    // programme period change, with no transport or HTTP evidence, and only
+    // Retry recovered it.
+    private val unspecifiedIo = PrototypeFeedFailure(PrototypeFailureReason.PLAYER_FAILED, playerCode = 2000)
+    private fun sourceFailure(stale: Boolean = false, code: Int = 2000,
+        source: NativePlayerFailureSource = NativePlayerFailureSource.SOURCE) = NativePlayerFailure(code,
+        "ERROR_CODE_IO_UNSPECIFIED", source, listOf("androidx.media3.exoplayer.ExoPlaybackException",
+            if (stale) "androidx.media3.exoplayer.dash.DashManifestStaleException" else "java.io.IOException"), stale)
+    private fun boundaryFail(state: FeedAutoRecoveryState, member: Any?, now: Long,
+        player: NativePlayerFailure? = sourceFailure(), boundaryAgeMs: Long? = 22_000, live: Boolean = true,
+        evidence: NativePlaybackTransportFailure? = null, httpFailure: NativePlaybackHttpFailure? = null,
+        failure: PrototypeFeedFailure = unspecifiedIo) = state.failed(member, failure, evidence, live, true, true, now,
+        httpFailure = httpFailure, playerFailure = player, periodBoundaryAgeMs = boundaryAgeMs)
+
+    @Test fun `a live unspecified IO source error at a period boundary schedules bounded recovery`() {
+        for ((player, age) in listOf(sourceFailure() to 22_000L, sourceFailure() to 0L, sourceFailure() to 60_000L,
+            // A manifest refused as out of sync needs no recent boundary.
+            sourceFailure(stale = true) to null, sourceFailure(stale = true) to 600_000L)) {
+            val state = FeedAutoRecoveryState(); val member = Any()
+            state.observe(member, sample(0), 0)
+            assertEquals("age=$age stale=${player.manifestStale}", FeedAutoRecoveryDecision.SCHEDULED,
+                boundaryFail(state, member, 1, player, age))
+        }
+        // An old network failure or a live 404 does not refuse it.
+        for ((evidence, http) in listOf(transport(age = 30_000) to null,
+            null to NativePlaybackHttpFailure(NativeFailureStage.MEDIA_REQUEST_OPEN, 30_000, 404),
+            null to NativePlaybackHttpFailure(NativeFailureStage.MEDIA_REQUEST_OPEN, 30_000, 503))) {
+            val state = FeedAutoRecoveryState(); val member = Any()
+            state.observe(member, sample(0), 0)
+            assertEquals(FeedAutoRecoveryDecision.SCHEDULED,
+                boundaryFail(state, member, 1, evidence = evidence, httpFailure = http))
+        }
+    }
+
+    @Test fun `period boundary recovery is limited and never loops`() {
+        val state = FeedAutoRecoveryState(); val member = Any()
+        state.observe(member, sample(0), 0)
+        assertEquals(FeedAutoRecoveryDecision.SCHEDULED, boundaryFail(state, member, 0))
+        var now = 0L
+        for (attempt in 1..3) {
+            now += 10_000
+            assertEquals(attempt, checkNotNull(state.takeDue(now)).attempt)
+            // Each retry's player fails the same way before it plays.
+            now += 500
+            assertEquals(if (attempt < 3) FeedAutoRecoveryDecision.SCHEDULED else FeedAutoRecoveryDecision.EXHAUSTED,
+                boundaryFail(state, null, now))
+        }
+        assertTrue(state.exhausted)
+        assertNull(state.pending)
+        assertEquals(FeedAutoRecoveryDecision.SKIPPED, boundaryFail(state, null, now + 1))
+        assertNull(state.takeDue(now + 60_000))
+    }
+
+    @Test fun `period boundary recovery refuses other stages codes and refusal evidence`() {
+        val refused = listOf<(FeedAutoRecoveryState, Any) -> FeedAutoRecoveryDecision>(
+            { s, m -> boundaryFail(s, m, 1, live = false) },
+            { s, m -> boundaryFail(s, m, 1, boundaryAgeMs = null) },
+            { s, m -> boundaryFail(s, m, 1, boundaryAgeMs = 60_001) },
+            { s, m -> boundaryFail(s, m, 1, boundaryAgeMs = -1) },
+            { s, m -> boundaryFail(s, m, 1, player = null) },
+            { s, m -> boundaryFail(s, m, 1, player = sourceFailure(source = NativePlayerFailureSource.RENDERER)) },
+            { s, m -> boundaryFail(s, m, 1, player = sourceFailure(source = NativePlayerFailureSource.DRM)) },
+            { s, m -> boundaryFail(s, m, 1, player = sourceFailure(source = NativePlayerFailureSource.UNEXPECTED)) },
+            { s, m -> boundaryFail(s, m, 1, player = sourceFailure(code = 2001)) },
+            { s, m -> boundaryFail(s, m, 1, failure = unspecifiedIo.copy(playerCode = 1000)) },
+            { s, m -> boundaryFail(s, m, 1, failure = PrototypeFeedFailure(PrototypeFailureReason.MEDIA_BLOCKED)) },
+            { s, m -> boundaryFail(s, m, 1, evidence = transport(ProviderTransportFailure.TLS, age = 30_000)) },
+            { s, m -> boundaryFail(s, m, 1, evidence = transport(cancelled = true, age = 30_000)) },
+            { s, m -> boundaryFail(s, m, 1, evidence = transport(kind = ProviderTransportExceptionKind.INTERRUPTED_IO, age = 30_000)) },
+        ) + listOf(400, 401, 403, 410).map { status -> { s: FeedAutoRecoveryState, m: Any -> boundaryFail(s, m, 1,
+            httpFailure = NativePlaybackHttpFailure(NativeFailureStage.MEDIA_REQUEST_OPEN, 30_000, status)) } }
+        refused.forEachIndexed { index, attempt ->
+            val state = FeedAutoRecoveryState(); val member = Any()
+            state.observe(member, sample(0), 0)
+            assertEquals("case=$index", FeedAutoRecoveryDecision.SKIPPED, attempt(state, member))
+            assertNull(state.pending)
+        }
+        // A feed that was not playing is not recovered either.
+        val idle = FeedAutoRecoveryState()
+        assertEquals(FeedAutoRecoveryDecision.SKIPPED, boundaryFail(idle, Any(), 1))
     }
 
     private fun sample(now: Long, clock: Long = 20_000 + now, frames: Long? = now / 10 + 1) =

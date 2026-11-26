@@ -47,6 +47,8 @@ internal class BoundedDashManifestParser(
     // #568: a live feed's in-memory rewind buffer. Segments and periods the
     // provider drops stay in this normalized manifest while they are cached.
     private val liveCache: NativeLiveSegmentCache? = null,
+    // #722: a live refresh that lost a period Media3 still plays, retried.
+    private val onOutOfSync: () -> Unit = {},
 ) : ParsingLoadable.Parser<DashManifest> {
     // Timeline entries seen in earlier refreshes, per period/adaptation/timescale.
     private val retainedTimelines = HashMap<String, java.util.TreeMap<Long, Long>>()
@@ -151,11 +153,16 @@ internal class BoundedDashManifestParser(
             require(parsed.periodCount in 1..16 && parsed.locations.all { URI(it.url.toString()) == manifestUri })
             val serverPeriods = (0 until parsed.periodCount).map(parsed::getPeriod)
             // Periods the provider dropped stay while everything needed from them is cached.
-            val keptPeriods = if (liveCache != null && parsed.dynamic) lastPeriods.filter { old ->
-                old.id != null && serverPeriods.none { it.id == old.id } && old.startMs < serverPeriods.first().startMs &&
-                    liveCache.periodRetainable(checkNotNull(old.id))
-            } else emptyList()
+            val keptPeriods = if (liveCache != null && parsed.dynamic)
+                nativeRetainedDashPeriods(lastPeriods, serverPeriods, { it.id }, { it.startMs }, liveCache::periodRetainable)
+            else emptyList()
             val periods = (keptPeriods + serverPeriods).takeLast(16)
+            // #722: Media3 would refuse this refresh and keep playing the
+            // previous one. Refuse it here, before it replaces the declared
+            // media or the retained periods, as a retryable load error.
+            if (liveCache != null && parsed.dynamic &&
+                nativeDashPeriodsOutOfSync(lastPeriods.map { it.startMs }, periods.first().startMs, periods.size))
+                throw NativeDashManifestOutOfSyncException()
             // Retained periods were bounded when the provider declared them.
             val firstServerPeriod = periods.size - serverPeriods.size
             val windowMs = if (parsed.dynamic) widened(parsed.timeShiftBufferDepthMs) else parsed.timeShiftBufferDepthMs
@@ -228,6 +235,9 @@ internal class BoundedDashManifestParser(
             }
             onEvent(DashManifestPolicyEvent.DECLARED_PATHS, paths.size)
             return normalized
+        } catch (error: NativeDashManifestOutOfSyncException) {
+            onOutOfSync()
+            throw error
         } catch (_: Exception) {
             onRefusal(stage)
             onEvent(DashManifestPolicyEvent.REFUSED, 0)
@@ -271,3 +281,33 @@ internal class BoundedDashManifestParser(
         return declaredDashSegmentNumbers(first, Math.subtractExact(endExclusive, first))
     }
 }
+
+// #722: the earlier periods a live manifest keeps after the provider dropped
+// them: the newest ones, back to the first that is not retainable. Media3
+// matches periods by position and refuses a refresh that lost a period after
+// its first one, so a retained period may only leave from the front. A gap
+// (for example an ad period with a missed recording between two cached ones)
+// ends retention there, as a gap in a timeline does.
+internal fun <P> nativeRetainedDashPeriods(previous: List<P>, server: List<P>, id: (P) -> String?,
+    startMs: (P) -> Long, retainable: (String) -> Boolean): List<P> {
+    val first = server.firstOrNull() ?: return emptyList()
+    val kept = ArrayDeque<P>()
+    for (period in previous.filter { startMs(it) < startMs(first) }.asReversed()) {
+        val key = id(period) ?: break
+        if (server.any { id(it) == key } || !retainable(key)) break
+        kept.addFirst(period)
+    }
+    return kept.toList()
+}
+
+// #722: a live refresh is out of sync when, after the periods that ended
+// before its first one, the previous refresh had more periods than it has:
+// Media3's own rule, which with no reloads left fails the feed (2000).
+internal fun nativeDashPeriodsOutOfSync(previousStartsMs: List<Long>, firstStartMs: Long, count: Int): Boolean {
+    val removed = previousStartsMs.takeWhile { it < firstStartMs }.size
+    return previousStartsMs.size - removed > count
+}
+
+// Retryable, unlike a policy refusal: the provider's next refresh may agree
+// with the one the player is still playing.
+internal class NativeDashManifestOutOfSyncException : java.io.IOException("Native manifest out of sync")

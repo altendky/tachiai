@@ -2106,7 +2106,8 @@ open class PrototypeActivity : ComponentActivity() {
             restoreOffset = automaticPairRestoreWanted == true,
             nowMs = now,
             authorizationRefreshSupported = selection?.slots?.getOrNull(index)?.service == PrototypeService.ABEMA && member != null,
-            httpFailure = snapshot?.httpFailure, transientAccountReadiness = transientAccountReadiness)
+            httpFailure = snapshot?.httpFailure, transientAccountReadiness = transientAccountReadiness,
+            playerFailure = snapshot?.playerFailure, periodBoundaryAgeMs = snapshot?.periodBoundaryAgeMs)
         // A normal stop or a feed's end is expected; a limit needs retained failure evidence.
         val ended = failure.reason in setOf(PrototypeFailureReason.REPLAY_ENDED, PrototypeFailureReason.BROADCAST_ENDED)
         // Waiting checks repeat for as long as a show is off air; they aren't failures.
@@ -2128,7 +2129,10 @@ open class PrototypeActivity : ComponentActivity() {
         pairOffsetBaselineLost = true
         playback?.pair?.let { pairOffsetSession?.invalidate(it) }
         feedRetries[index].invalidate()
-        Log.d("TachiaiPrototype", "slot=${NativeMixedSide.entries[index].name} failure=${failure.reason.name} http=${failure.httpStatus ?: 0}")
+        // #722: the player's text-free failure record, when it failed.
+        Log.d("TachiaiPrototype", "slot=${NativeMixedSide.entries[index].name} failure=${failure.reason.name} http=${failure.httpStatus ?: 0}" +
+            (snapshot?.playerFailure?.let { " ${it.closedSummary()} periodBoundaryAgeMs=${snapshot.periodBoundaryAgeMs ?: "NONE"}" } ?: "") +
+            " autoRecovery=${autoDecision.name}")
         invalidatePlay()
         playback?.setMember(NativeMixedSide.entries[index], null)
         prepared[index] = false

@@ -105,4 +105,42 @@ class BoundedDashManifestRetentionTest {
         assertEquals(50_000_000L, index.getTimeUs(index.firstSegmentNum))
         assertEquals(60_000L, refreshed.timeShiftBufferDepthMs)
     }
+
+    // #722: periods at `starts` seconds, each one five-second segment long.
+    private fun periods(vararg starts: Int) = """
+        <MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="dynamic" availabilityStartTime="2026-01-01T00:00:00Z"
+          minimumUpdatePeriod="PT5S" timeShiftBufferDepth="PT60S" minBufferTime="PT2S">
+          ${starts.joinToString("\n") { start -> """
+          <Period id="p$start" start="PT${start}S">
+            <AdaptationSet mimeType="video/mp4" codecs="avc1.4d401f">
+              <SegmentTemplate timescale="1" initialization="init-p$start-${'$'}RepresentationID${'$'}.mp4"
+                media="p$start-${'$'}RepresentationID${'$'}-${'$'}Time${'$'}.m4s">
+                <SegmentTimeline><S t="0" d="5"/></SegmentTimeline>
+              </SegmentTemplate>
+              <Representation id="high" bandwidth="4000000" width="1920" height="1080"/>
+            </AdaptationSet>
+          </Period>""" }}
+        </MPD>
+    """.trimIndent()
+
+    @Test fun aRefreshThatLostAPeriodIsRetriedWithoutReplacingTheDeclaredMedia() {
+        val cache = NativeLiveSegmentCache(executor = InlineExecutor())
+        val policy = DeclaredDashMediaPolicy(manifest) { true }
+        val events = mutableListOf<DashManifestPolicyEvent>()
+        var outOfSync = 0
+        val parser = BoundedDashManifestParser(manifest, policy, { true }, { true }, { event, _ -> events += event },
+            wallMs = { availability + 92_000 }, liveCache = cache, onOutOfSync = { outOfSync++ })
+        val uri = Uri.parse(manifest.toString())
+        parser.parse(uri, periods(80, 85, 90).byteInputStream())
+        assertTrue(policy.allows(URI("${base}p85-high-0.m4s")))
+        // The provider withdrew the announced p85 period.
+        assertThrows(NativeDashManifestOutOfSyncException::class.java) {
+            parser.parse(uri, periods(80, 90).byteInputStream())
+        }
+        assertEquals(1, outOfSync)
+        assertFalse(DashManifestPolicyEvent.REFUSED in events)
+        assertTrue(policy.allows(URI("${base}p85-high-0.m4s")))
+        // A later refresh that agrees is accepted as usual.
+        assertEquals(4, parser.parse(uri, periods(80, 85, 90, 95).byteInputStream()).periodCount)
+    }
 }

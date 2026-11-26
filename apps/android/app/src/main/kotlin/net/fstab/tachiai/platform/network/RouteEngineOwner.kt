@@ -33,7 +33,7 @@ internal class NativeRouteEngine(private val engine: Engine) : RouteEngine {
 // it runs retires it first, revoking the job's leases, rather than adopting
 // it: an adopted feed would lose its route when the job's Network ends.
 internal class RouteEngineOwner(
-    private val idleMs: Long = 30_000,
+    private val idleMs: Long = IDLE_MS,
     // Closed events and counts only; never a configuration, key or host.
     private val log: (String) -> Unit = {},
     private val schedule: (Long, () -> Unit) -> Unit = { delay, action ->
@@ -41,6 +41,17 @@ internal class RouteEngineOwner(
     },
 ) {
     companion object {
+        // Idle retirement must run before Android's cached-app freezer stops
+        // the ordinary process, or the idle engine waits for the next thaw
+        // (#733). Once its last lease binding goes, that process is usually
+        // cached, and AOSP freezes a cached process after a 10 s debounce
+        // (seen on tachiai-dev in #682 and #733). The timer starts at the
+        // last lease close, before that unbind, so 5 s normally leaves about
+        // 5 s of margin while still covering quick reuse such as a feed
+        // change or a quick viewer reopen. Where a device freezes sooner, the
+        // overdue retirement runs at the next thaw, as before; it never
+        // starts a second engine.
+        internal const val IDLE_MS = 5_000L
         private val retirements = ScheduledThreadPoolExecutor(1) { task ->
             Thread(task, "route-engine-retire").apply { isDaemon = true }
         }

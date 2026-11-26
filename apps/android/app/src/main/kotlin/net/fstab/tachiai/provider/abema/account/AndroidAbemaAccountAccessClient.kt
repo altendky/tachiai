@@ -9,6 +9,8 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.locks.ReentrantLock
+import net.fstab.tachiai.platform.diagnostics.OperationStats
+import net.fstab.tachiai.platform.network.ProviderRouteOwnerReads
 
 // Worker acquisition/checks; main admission is RAM/clock only. The ordinary
 // process owns the durable record. This client retains only its private lease.
@@ -192,6 +194,8 @@ internal class AndroidAbemaAccountAccessClient(context: Context, instanceId: Str
     }
     fun checkWorker(): Boolean {
         if (!worker() || !current()) return false
+        val started = SystemClock.elapsedRealtime()
+        val stats = AbemaAccountCheckStats.client
         return performAbemaAccountCheck(checks, AbemaAccountAccessIpc.CHECK_REPLY_MS, SystemClock::elapsedRealtime, ::current,
             dispatch = { dispatched, replyMs ->
                 var interrupted = false
@@ -200,7 +204,11 @@ internal class AndroidAbemaAccountAccessClient(context: Context, instanceId: Str
                         SystemClock::elapsedRealtime, ::live).also { interrupted = it.interrupted }.completed
                 }
                 AbemaAccountCheckCompletion(abemaAccountCheckAccepted(fields, request), interrupted)
-            }, revoke = { lose("CHECK_REFUSED"); revoked.set(true); close() }, history = checkHistory)
+            }, revoke = { lose("CHECK_REFUSED"); revoked.set(true); close() }, history = checkHistory,
+            observe = { stats.count(it.event, SystemClock.elapsedRealtime()) }).also { accepted ->
+            AbemaAccountCheckStats.record(stats, "check", started, SystemClock.elapsedRealtime(), accepted)
+            logAbemaCheckStats(stats)
+        }
     }
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
@@ -236,6 +244,14 @@ internal class AndroidAbemaAccountAccessClient(context: Context, instanceId: Str
         return confirmed
     }
     override fun toString() = "AndroidAbemaAccountAccessClient(redacted)"
+}
+
+// Logs whichever closed check and store-read lines are due (#745).
+internal fun logAbemaCheckStats(stats: OperationStats, tag: String = "TachiaiAbemaAccount") {
+    runCatching {
+        stats.drain(SystemClock.elapsedRealtime())?.let { android.util.Log.d(tag, it) }
+        ProviderRouteOwnerReads.drainStats().forEach { android.util.Log.d("TachiaiStoreReads", it) }
+    }
 }
 
 // The closed cause of an acquired lease that is no longer current (#729).

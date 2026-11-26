@@ -6,6 +6,15 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
+import net.fstab.tachiai.feature.connections.ProviderInstanceStore
+import net.fstab.tachiai.platform.network.ConnectionProfileStore
+import net.fstab.tachiai.platform.network.ProviderRouteAdmission
+import net.fstab.tachiai.platform.network.ProviderRouteOwnerReads
+import net.fstab.tachiai.platform.network.parseConnectionProfile
+import net.fstab.tachiai.platform.storage.EnvelopeSecretStore
+import net.fstab.tachiai.presentation.*
+import net.fstab.tachiai.provider.abema.abemaCatalogRouteOwnerRead
+import net.fstab.tachiai.provider.abema.captureAbemaCatalogRouteOwner
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -19,6 +28,8 @@ class AbemaAccountAccessOwnerTest {
         @Volatile var elapsed = 0L
         var elapsedHook: () -> Long = { elapsed }
         @Volatile var ownerCurrent = true
+        // The route owner's protected store check, when a test wires one (#745).
+        @Volatile var ownerRead: () -> Boolean = { true }
         var ownerChecks = 0
         var ownerHook: () -> Unit = {}
         val profiles = AtomicInteger()
@@ -43,7 +54,7 @@ class AbemaAccountAccessOwnerTest {
         init {
             if (saved) store.replace(decodedAbemaGrant(fixtureAccountToken(), "intended-account", wall), wall, store.revision()) { true }
             owner = AbemaAccountAccessOwner(instance, "fixture-owner", store, { wallHook() }, { elapsedHook() },
-                { ownerChecks++; ownerHook(); ownerCurrent }, { gate -> object : AbemaAccountTransport {
+                { ownerChecks++; ownerHook(); ownerCurrent && ownerRead() }, { gate -> object : AbemaAccountTransport {
                     override fun profile(id: String, bearer: String): AbemaAccountProfileResult {
                         assertTrue(gate()); profiles.incrementAndGet(); profileAction(); return profile
                     }
@@ -535,4 +546,107 @@ class AbemaAccountAccessOwnerTest {
             assertEquals("change $change", 1, f.marks.count { it.startsWith("PROOF_REVOKED") })
         }
     }
+
+    // #745: the provider-instance and connection-profile stores behind the
+    // route owner check, with the Android binding's verdict reads.
+    private class RouteStores(decryptMs: Long = 0, maxAgeMs: Long = ProviderRouteOwnerReads.VERDICT_MAX_AGE_MS) {
+        val instanceSecrets = EnvelopeSecretStore(decryptMs)
+        val profileSecrets = EnvelopeSecretStore(decryptMs)
+        val instances = ProviderInstanceStore(instanceSecrets)
+        val profiles = ConnectionProfileStore(profileSecrets)
+        val abema = defaultProviderInstanceId(PrototypeService.ABEMA)
+        val routeId: String = profiles.add("Japan", routeProfile("first")).single().id
+        init { instances.saveRoutes(abema, null, listOf(routeChoice(routeId, "Japan")), ::routeDefaults) }
+        val captured = captureAbemaCatalogRouteOwner(abema, { instances.read(::routeDefaults) }, profiles::snapshot)
+        private val admission = ProviderRouteAdmission(captured.proof())
+        private val reads = ProviderRouteOwnerReads(instances, profiles, ::routeDefaults, maxAgeMs = maxAgeMs)
+        // The shape of the Android binding's sameOwner.
+        fun sameOwner() = admission.check { expected ->
+            abemaCatalogRouteOwnerRead(reads, captured, abema, expected).takeIf(captured::sameOwnership)?.proof()
+        }
+        fun decrypts() = instanceSecrets.decrypts.get() + profileSecrets.decrypts.get()
+    }
+    private fun routedLease(r: RouteStores = RouteStores()): Triple<Fixture, AbemaAccountAccessOwner.Attachment, AbemaAccountAccessLease> {
+        val f = Fixture(); f.ownerRead = r::sameOwner
+        val attachment = f.owner.attach()
+        val lease = (attachment.acquire() as AbemaAccountAccessResult.Account).lease
+        return Triple(f, attachment, lease)
+    }
+
+    @Test fun routedDurableChecksDecryptNoOwnerStoreWhileItIsUnchanged() {
+        val r = RouteStores()
+        val (_, attachment, lease) = routedLease(r)
+        assertTrue(lease.checkWorker())
+        val decrypts = r.decrypts()
+        repeat(10) { assertTrue(lease.checkWorker()) }
+        assertEquals(decrypts, r.decrypts())
+        attachment.close()
+    }
+
+    @Test fun everyStoreChangeStillTakesEffectForTheNextRoutedDurableCheck() {
+        for (change in listOf("FORGET", "ROLLBACK", "ACCOUNT_REPLACEMENT", "PROFILE_REMOVED", "ROUTE_CHANGED", "RENEWAL")) {
+            val r = RouteStores()
+            val (f, attachment, lease) = routedLease(r)
+            repeat(3) { assertTrue(change, lease.checkWorker()) }
+            f.wall = 1_500_000
+            fun replace(user: String, expiry: String) = f.store.replaceSnapshot(
+                decodedAbemaGrant(fixtureAccountToken(user, expiry), user, f.wall), f.wall, f.store.revision()) { true }
+            when (change) {
+                "FORGET" -> f.store.forget()
+                "ROLLBACK" -> {
+                    val renewed = replace("intended-account", "3000")
+                    assertTrue(change, lease.checkWorker())
+                    f.store.rollbackPublished(renewed)
+                }
+                "ACCOUNT_REPLACEMENT" -> replace("different-account", "3000")
+                "PROFILE_REMOVED" -> ConnectionProfileStore(r.profileSecrets).remove(r.routeId)
+                "ROUTE_CHANGED" -> {
+                    val other = ConnectionProfileStore(r.profileSecrets).add("Osaka", routeProfile("second")).last().id
+                    ProviderInstanceStore(r.instanceSecrets).saveRoutes(r.abema, null,
+                        listOf(routeChoice(other, "Osaka")), ::routeDefaults)
+                }
+                "RENEWAL" -> replace("intended-account", "3000")
+            }
+            val renewal = change == "RENEWAL"
+            assertEquals(change, renewal, lease.checkWorker())
+            assertEquals(change, renewal, lease.current())
+            if (renewal) assertEquals(3_000_000L, lease.expiresAtMs())
+            attachment.close()
+        }
+    }
+
+    // Before/after harness for the PR: the same durable checks with every
+    // owner check reading fully (maxAgeMs = 0, the previous behavior) and
+    // with revision verdicts, while each store decrypt costs decryptMs. Two
+    // threads stand in for two playing feeds sharing the store locks.
+    @Test fun routedDurableCheckCostBeforeAndAfterRevisionVerdicts() {
+        fun measure(maxAgeMs: Long): Pair<Double, Double> {
+            val r = RouteStores(decryptMs = 10, maxAgeMs = maxAgeMs)
+            val (_, attachment, lease) = routedLease(r)
+            assertTrue(lease.checkWorker())
+            val checks = 10
+            val decrypts = r.decrypts()
+            val pool = Executors.newFixedThreadPool(2)
+            val began = System.nanoTime()
+            try {
+                val runs = List(2) { pool.submit<Boolean> { (1..checks).all { lease.checkWorker() } } }
+                runs.forEach { assertTrue(it.get(30, TimeUnit.SECONDS)) }
+            } finally { pool.shutdownNow() }
+            val elapsedMs = (System.nanoTime() - began) / 1_000_000.0
+            attachment.close()
+            return (r.decrypts() - decrypts).toDouble() / (2 * checks) to elapsedMs / (2 * checks)
+        }
+        val (beforeDecrypts, beforeMs) = measure(0)
+        val (afterDecrypts, afterMs) = measure(ProviderRouteOwnerReads.VERDICT_MAX_AGE_MS)
+        println("routedDurableCheck before decryptsPerCheck=$beforeDecrypts msPerCheck=$beforeMs " +
+            "after decryptsPerCheck=$afterDecrypts msPerCheck=$afterMs")
+        assertEquals(8.0, beforeDecrypts, 0.0)
+        assertEquals(0.0, afterDecrypts, 0.0)
+        // Times are reported for comparison only; the decryption counts are the assertion.
+        assertTrue(afterMs >= 0 && beforeMs >= 0)
+    }
 }
+
+private fun routeDefaults() = legacyProviderSetups(defaultSourceSetups())
+private fun routeProfile(secret: String) = parseConnectionProfile("http://user:$secret@proxy.example.test:3128".toByteArray())
+private fun routeChoice(id: String, name: String) = SourceRouteChoice(SourceRouteMode.SAVED_CONNECTION, id, name)

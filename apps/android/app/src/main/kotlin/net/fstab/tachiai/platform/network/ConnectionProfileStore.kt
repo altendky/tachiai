@@ -6,8 +6,12 @@ import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.util.UUID
 import java.io.File
+import net.fstab.tachiai.platform.storage.PrivateSecretRevision
 import net.fstab.tachiai.platform.storage.PrivateSecretStore
 import net.fstab.tachiai.platform.storage.PRIVATE_SECRET_LIMIT
+import net.fstab.tachiai.platform.storage.StoreLockKind
+import net.fstab.tachiai.platform.storage.StoreLockStats
+import net.fstab.tachiai.platform.storage.StoreLockUse
 import net.fstab.tachiai.platform.storage.processFileLocked
 import net.fstab.tachiai.presentation.MAX_PROVIDER_ROUTES
 
@@ -20,12 +24,13 @@ internal class ConnectionProfileStore(private val secrets: PrivateSecretStore, p
     private val protocols: RouteProtocols = routeProtocols, private val mutated: () -> Unit = {}) {
     companion object { private val lock = Any() } // Also serializes stores across Activity recreation.
     private class Entry(val id: String, val name: String, val profile: ConnectionProfile)
-    private fun <T> locked(action: () -> T): T = synchronized(lock) {
-        val file = lockFile
-        if (file == null) action() else processFileLocked(file, action)
-    }
-    private fun read(): List<Entry> {
-        val bytes = secrets.read() ?: return emptyList()
+    private fun <T> locked(use: StoreLockUse = StoreLockUse.READ, action: () -> T): T =
+        StoreLockStats.measure(StoreLockKind.CONNECTION_PROFILES, use, { inner -> synchronized(lock) {
+            val file = lockFile
+            if (file == null) inner() else processFileLocked(file, inner)
+        } }, action)
+    private fun read(stored: ByteArray? = secrets.read()): List<Entry> {
+        val bytes = stored ?: return emptyList()
         check(bytes.size <= PRIVATE_SECRET_LIMIT)
         DataInputStream(ByteArrayInputStream(bytes)).use { input ->
             val version = input.readInt()
@@ -89,7 +94,21 @@ internal class ConnectionProfileStore(private val secrets: PrivateSecretStore, p
         return locked { read().filter { it.id in ids }.associate { it.id to it.profile } }
     }
 
-    fun add(name: String, profile: ConnectionProfile) = locked {
+    // The record's revision without decrypting it (#745); an absent record
+    // has its own revision. Null when the secret store cannot name one.
+    fun revision(): PrivateSecretRevision? = locked(StoreLockUse.REVISION) { secrets.revision() }
+
+    // snapshot(ids) with the revision of exactly the record it decoded.
+    fun snapshotRevisioned(ids: Set<String>): Pair<Map<String, ConnectionProfile>, PrivateSecretRevision?> {
+        require(ids.size <= MAX_PROVIDER_ROUTES && ids.all { UUID.fromString(it).toString() == it })
+        if (ids.isEmpty()) return emptyMap<String, ConnectionProfile>() to null
+        return locked {
+            val stored = secrets.readRevisioned()
+            read(stored.plaintext).filter { it.id in ids }.associate { it.id to it.profile } to stored.revision
+        }
+    }
+
+    fun add(name: String, profile: ConnectionProfile) = locked(StoreLockUse.WRITE) {
         check(validConnectionName(name))
         val validated = protocols.validate(profile)
         val entries = read()
@@ -99,7 +118,7 @@ internal class ConnectionProfileStore(private val secrets: PrivateSecretStore, p
         summaries(updated)
     }.also { runCatching(mutated) }
 
-    fun remove(id: String) = locked {
+    fun remove(id: String) = locked(StoreLockUse.WRITE) {
         val entries = read()
         check(entries.any { it.id == id })
         val updated = entries.filterNot { it.id == id }

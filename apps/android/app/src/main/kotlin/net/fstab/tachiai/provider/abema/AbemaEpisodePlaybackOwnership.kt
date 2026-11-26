@@ -9,6 +9,7 @@ import net.fstab.tachiai.platform.network.connectionProfileStore
 import net.fstab.tachiai.feature.connections.providerInstanceStore
 import net.fstab.tachiai.feature.connections.legacyProviderSettings
 import net.fstab.tachiai.platform.network.ConnectionProfile
+import net.fstab.tachiai.platform.network.ProviderRouteOwnerReads
 import net.fstab.tachiai.platform.network.ProviderRoutePoolException
 import net.fstab.tachiai.platform.diagnostics.FailureReporter
 import net.fstab.tachiai.platform.diagnostics.FailureStage
@@ -63,9 +64,12 @@ internal fun androidAbemaEpisodePlaybackOwnership(context: Context, instance: Pr
     profile: ConnectionProfile?, canUse: () -> Boolean, diagnostics: FailureReporter,
     expectedProof: String? = null): AbemaEpisodePlaybackOwnership {
     val application = context.applicationContext
-    fun read(expected: String?) = captureAbemaCatalogRouteOwner(instance.id,
-        { providerInstanceStore(application).read { legacyProviderSettings(application) } },
-        { connectionProfileStore(application).snapshot(it) }, expected)
+    // Each media request re-checks this owner (#745); unchanged store
+    // revisions keep its last verdict. Built on the first worker read.
+    val reads by lazy {
+        ProviderRouteOwnerReads(providerInstanceStore(application), connectionProfileStore(application),
+            { legacyProviderSettings(application) })
+    }
     // This factory runs on main. Its inputs are the viewer's worker-built frozen
     // plan; only checkWorker reads protected state. Legacy single-route callers
     // can derive a candidate proof solely from those already-captured inputs.
@@ -76,6 +80,6 @@ internal fun androidAbemaEpisodePlaybackOwnership(context: Context, instance: Pr
         })
     return AbemaEpisodePlaybackOwnership(captured, readOwner = {
         check(Looper.myLooper() != Looper.getMainLooper())
-        read(captured.proof())
+        abemaCatalogRouteOwnerRead(reads, captured, instance.id, captured.proof())
     }, canUse = canUse, diagnostics = diagnostics)
 }

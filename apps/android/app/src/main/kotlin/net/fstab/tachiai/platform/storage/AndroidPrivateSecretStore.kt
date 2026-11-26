@@ -60,9 +60,19 @@ internal class AndroidPrivateSecretStore private constructor(context: Context, b
         return generator.generateKey()
     }
 
-    override fun read(): ByteArray? = if (readKey == null) {
-        readEnvelope()?.let { decryptPrivateSecret(key(create = false), binding, it) }
-    } else readKey.read(::readEnvelope) { key, bytes -> decryptPrivateSecret(key, binding, bytes) }
+    override fun read(): ByteArray? = readRevisioned().plaintext
+
+    // The envelope's digest needs no key or decryption (#745).
+    override fun revision(): PrivateSecretRevision = PrivateSecretRevision.of(readEnvelope())
+
+    override fun readRevisioned(): RevisionedPrivateSecret {
+        var envelope: ByteArray? = null
+        fun envelope() = readEnvelope().also { envelope = it }
+        val plaintext = if (readKey == null) {
+            envelope()?.let { decryptPrivateSecret(key(create = false), binding, it) }
+        } else readKey.read(::envelope) { key, bytes -> decryptPrivateSecret(key, binding, bytes) }
+        return RevisionedPrivateSecret(plaintext, PrivateSecretRevision.of(envelope))
+    }
 
     private fun readEnvelope(): ByteArray? {
         val input = try { file.openRead() } catch (error: FileNotFoundException) {

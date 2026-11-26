@@ -1,6 +1,7 @@
 package net.fstab.tachiai.platform.storage
 
 import java.nio.ByteBuffer
+import java.security.MessageDigest
 import javax.crypto.Cipher
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
@@ -11,6 +12,29 @@ private const val ENVELOPE_HEADER = 13 // Version plus 12-byte random GCM IV.
 internal interface PrivateSecretStore {
     fun read(): ByteArray?
     fun write(plaintext: ByteArray)
+    // The stored record's revision without decrypting it, or null when this
+    // store cannot name one (#745). Callers hold the owning store's lock.
+    fun revision(): PrivateSecretRevision? = null
+    // One read with the revision of exactly the record it decrypted.
+    fun readRevisioned(): RevisionedPrivateSecret = RevisionedPrivateSecret(read(), null)
+}
+
+// A digest of one exact encrypted record, holding no plaintext (#745). Every
+// write encrypts with a fresh random IV, so any committed write by any process
+// gives a new revision. An absent record has its own revision.
+internal class PrivateSecretRevision private constructor(private val digest: ByteArray) {
+    companion object {
+        val ABSENT = PrivateSecretRevision(ByteArray(0))
+        fun of(envelope: ByteArray?): PrivateSecretRevision =
+            if (envelope == null) ABSENT else PrivateSecretRevision(MessageDigest.getInstance("SHA-256").digest(envelope))
+    }
+    override fun equals(other: Any?) = other is PrivateSecretRevision && MessageDigest.isEqual(digest, other.digest)
+    override fun hashCode() = digest.contentHashCode()
+    override fun toString() = "PrivateSecretRevision(redacted)"
+}
+
+internal class RevisionedPrivateSecret(val plaintext: ByteArray?, val revision: PrivateSecretRevision?) {
+    override fun toString() = "RevisionedPrivateSecret(redacted)"
 }
 
 internal fun encryptPrivateSecret(key: SecretKey, binding: ByteArray, plaintext: ByteArray): ByteArray {

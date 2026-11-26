@@ -14,6 +14,10 @@ import kotlin.concurrent.thread
 import net.fstab.tachiai.platform.diagnostics.FailureObservation
 import net.fstab.tachiai.platform.diagnostics.FailureReporter
 import net.fstab.tachiai.platform.diagnostics.FailureStage
+import net.fstab.tachiai.feature.connections.ProviderInstanceStore
+import net.fstab.tachiai.platform.network.ConnectionProfileStore
+import net.fstab.tachiai.platform.network.ProviderRouteOwnerReads
+import net.fstab.tachiai.platform.storage.EnvelopeSecretStore
 import net.fstab.tachiai.platform.network.ProviderRoutePoolException
 import net.fstab.tachiai.platform.network.ProviderRoutePoolFailure
 import net.fstab.tachiai.platform.network.parseConnectionProfile
@@ -53,6 +57,40 @@ class AbemaEpisodePlaybackOwnershipTest {
             assertTrue(guard.checkWorker())
             assertEquals(2, reads)
         } finally { Thread.interrupted() }
+    }
+
+    // #745: each media request's owner check over the locked stores, keeping
+    // its verdict only while both stores' exact records are unchanged.
+    @Test fun storeVerdictsSkipDecryptsUntilARouteChangeRefusesTheNextRequest() {
+        val instanceSecrets = EnvelopeSecretStore(); val profileSecrets = EnvelopeSecretStore()
+        val instanceLock = temporary.newFile("instances.lock"); val profileLock = temporary.newFile("profiles.lock")
+        val instances = ProviderInstanceStore(instanceSecrets, instanceLock)
+        val profiles = ConnectionProfileStore(profileSecrets, profileLock)
+        fun defaults() = legacyProviderSetups(defaultSourceSetups())
+        val abema = defaultProviderInstanceId(PrototypeService.ABEMA)
+        val saved = profiles.add("Japan", profile()).single().id
+        instances.saveRoutes(abema, null, listOf(SourceRouteChoice(SourceRouteMode.SAVED_CONNECTION, saved, "Japan")), ::defaults)
+        val captured = captureAbemaCatalogRouteOwner(abema, { instances.read(::defaults) }, profiles::snapshot)
+        val reads = ProviderRouteOwnerReads(instances, profiles, ::defaults)
+        val guard = AbemaEpisodePlaybackOwnership(captured,
+            { abemaCatalogRouteOwnerRead(reads, captured, abema, captured.proof()) }, { true })
+        assertTrue(guard.checkWorker())
+        val decrypts = instanceSecrets.decrypts.get() + profileSecrets.decrypts.get()
+        repeat(10) { assertTrue(guard.checkWorker()) }
+        assertEquals(decrypts, instanceSecrets.decrypts.get() + profileSecrets.decrypts.get())
+        // A revision read cancelled while it waits for a store's file lock
+        // refuses only that request.
+        profileSecrets.readHook = { Thread.currentThread().interrupt(); throw FileLockInterruptionException() }
+        try {
+            assertFalse(guard.checkWorker())
+            assertTrue(Thread.currentThread().isInterrupted)
+        } finally { Thread.interrupted(); profileSecrets.readHook = {} }
+        assertTrue(guard.canContinue()); assertTrue(guard.checkWorker())
+        // A profile edit in place of the saved route ends the binding.
+        val other = ConnectionProfileStore(profileSecrets, profileLock).add("Osaka", profile("other")).last().id
+        ProviderInstanceStore(instanceSecrets, instanceLock).saveRoutes(abema, null,
+            listOf(SourceRouteChoice(SourceRouteMode.SAVED_CONNECTION, other, "Osaka")), ::defaults)
+        assertFalse(guard.checkWorker()); assertFalse(guard.canContinue())
     }
 
     @Test fun cancellationBeforeOrAfterAMatchingReadRefusesOnlyThatOperation() {

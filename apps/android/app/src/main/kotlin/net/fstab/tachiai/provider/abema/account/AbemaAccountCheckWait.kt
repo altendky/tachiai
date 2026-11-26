@@ -3,6 +3,7 @@ package net.fstab.tachiai.provider.abema.account
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.locks.ReentrantLock
+import net.fstab.tachiai.platform.diagnostics.OperationStats
 
 internal enum class AbemaAccountCheckLock { ACQUIRED, INTERRUPTED, TIMED_OUT }
 
@@ -33,6 +34,24 @@ internal class AbemaAccountCheckHistory {
     fun covers(ticket: Long) = accepted > ticket
 }
 
+// How a caller's check was answered, for closed counters only (#745).
+internal enum class AbemaAccountCheckPath(val event: String) { DISPATCHED("dispatched"), COALESCED("coalesced") }
+
+// Per-process account check costs (#745): fixed names, counts and milliseconds.
+// The viewer counts media request admissions and its lease checks; the
+// ordinary process counts the durable checks it serves.
+internal object AbemaAccountCheckStats {
+    val media = OperationStats("media=ADMISSION_STATS")
+    val client = OperationStats("client=CHECK_STATS")
+    val owner = OperationStats("owner=CHECK_STATS")
+    fun record(stats: OperationStats, event: String, startedMs: Long, nowMs: Long, accepted: Boolean) {
+        runCatching {
+            stats.time(event, nowMs - startedMs, nowMs)
+            if (!accepted) stats.count("refused", nowMs)
+        }
+    }
+}
+
 // The Android client retains IPC dispatch, exact reply validation and lease
 // validity. This owns their serialized operation and cleanup boundary.
 // queueMs bounds the wait for the serialized lock; each dispatched CHECK then
@@ -46,6 +65,7 @@ internal fun performAbemaAccountCheck(
     revoke: () -> Unit,
     replyMs: Long = queueMs,
     history: AbemaAccountCheckHistory? = null,
+    observe: (AbemaAccountCheckPath) -> Unit = {},
 ): Boolean {
     val start = nowMs()
     val ticket = history?.ticket()
@@ -62,8 +82,12 @@ internal fun performAbemaAccountCheck(
         // operation. Only dispatched uncertainty or lost validity owns revoke.
         if (queueMs - (now - start) <= 0) return false
         if (!current()) { revoke(); return false }
-        if (ticket != null && history.covers(ticket)) return current() && !Thread.currentThread().isInterrupted
+        if (ticket != null && history.covers(ticket)) {
+            runCatching { observe(AbemaAccountCheckPath.COALESCED) }
+            return current() && !Thread.currentThread().isInterrupted
+        }
         val dispatched = history?.ticket()
+        runCatching { observe(AbemaAccountCheckPath.DISPATCHED) }
         val completion = dispatch(now, replyMs)
         val okay = completion.accepted && current()
         if (!okay) revoke() else if (dispatched != null) history.accept(dispatched)

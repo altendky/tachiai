@@ -208,12 +208,14 @@ class AbemaAccountCheckWaitTest {
         val firstEntered = CountDownLatch(1); val finishFirst = CountDownLatch(1)
         val dispatched = AtomicInteger(); val revocations = AtomicInteger()
         val results = java.util.concurrent.ConcurrentLinkedQueue<Boolean>()
+        val paths = java.util.concurrent.ConcurrentLinkedQueue<AbemaAccountCheckPath>()
         fun attempt(block: Boolean) = performAbemaAccountCheck(lock, 2_000, ::now, { true },
             dispatch = { _, _ ->
                 dispatched.incrementAndGet()
                 if (block) { firstEntered.countDown(); check(finishFirst.await(2, TimeUnit.SECONDS)) }
                 AbemaAccountCheckCompletion(true, false)
-            }, revoke = { revocations.incrementAndGet() }, history = history)
+            }, revoke = { revocations.incrementAndGet() }, history = history,
+            observe = { paths += it; error("A counter failure cannot change the verdict") })
         val first = worker(failure) { results += attempt(true) }
         assertTrue(firstEntered.await(1, TimeUnit.SECONDS))
         // Both began after the in-flight check was dispatched, so neither may adopt it.
@@ -226,6 +228,9 @@ class AbemaAccountCheckWaitTest {
         assertEquals(listOf(true, true, true), results.toList())
         assertEquals("One of the queued callers adopts the other's later accepted check", 2, dispatched.get())
         assertEquals(0, revocations.get())
+        // #745 counters name each caller's path.
+        assertEquals(2, paths.count { it == AbemaAccountCheckPath.DISPATCHED })
+        assertEquals(1, paths.count { it == AbemaAccountCheckPath.COALESCED })
     }
 
     @Test fun anAcceptedLaterCheckCannotAdmitALeaseThatIsNoLongerCurrent() {

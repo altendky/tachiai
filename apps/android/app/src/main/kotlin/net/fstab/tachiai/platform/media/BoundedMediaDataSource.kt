@@ -76,6 +76,17 @@ internal class BoundedMediaRequests(
     internal inner class Source(private val type: Int, private val mediaResponseLimitBytes: Long,
         private val allowIcyMetadata: Boolean, private val recorder: Boolean = false) : BaseDataSource(true) {
         init { require(mediaResponseLimitBytes in 1..4L * 1024 * 1024 * 1024) }
+        // #618: the rewind buffer's recorder fetches in the background, and a
+        // missed recording only narrows the window. Its refusals and failures
+        // are not the feed's. A segment that left the manifest before its turn
+        // in the queue would otherwise latch MEDIA_BLOCKED on a healthy feed,
+        // which then labels any later failure and blocks automatic recovery.
+        // The policy check itself still applies; only the shared playback
+        // budget is reported.
+        private fun report(event: NativeMediaEvent, http: Int = 0) {
+            if (!recorder || event == NativeMediaEvent.LIMIT_REACHED) this@BoundedMediaRequests.report(event, http)
+        }
+        private val failureObserver: NativeFailureObserver = if (recorder) { _, _ -> } else onFailure
         private var connection: HttpsURLConnection? = null
         private var input: InputStream? = null
         private var source: URI? = null
@@ -123,7 +134,7 @@ internal class BoundedMediaRequests(
                 URI(dataSpec.uri.toString())
             } catch (error: Exception) {
                 if (requestCancelled(error)) report(NativeMediaEvent.REQUEST_CANCELLED)
-                else reportNativeFailure(NativeFailureStage.MEDIA_REQUEST_OPEN, onFailure,
+                else reportNativeFailure(NativeFailureStage.MEDIA_REQUEST_OPEN, failureObserver,
                     nativeMediaRequestException(error, NativeMediaOpenPhase.REQUEST_SETUP))
                 throw IOException("Native media request failed")
             }
@@ -147,7 +158,7 @@ internal class BoundedMediaRequests(
                     NativeMediaEvent.INPUT_OPEN_FAILED -> NativeMediaOpenPhase.INPUT_OPEN
                     else -> NativeMediaOpenPhase.REQUEST_SETUP
                 }
-                reportNativeFailure(NativeFailureStage.MEDIA_REQUEST_OPEN, onFailure, nativeMediaRequestException(error, phase))
+                reportNativeFailure(NativeFailureStage.MEDIA_REQUEST_OPEN, failureObserver, nativeMediaRequestException(error, phase))
             }
             try {
                 check(connection == null && !transferOpen)
@@ -363,7 +374,7 @@ internal class BoundedMediaRequests(
             } catch (error: Exception) {
                 val cancelled = requestCancelled(error)
                 costs?.readFinished(reading, error = true)
-                if (!cancelled) reportNativeFailure(NativeFailureStage.MEDIA_REQUEST_READ, onFailure, nativeMediaRequestException(error))
+                if (!cancelled) reportNativeFailure(NativeFailureStage.MEDIA_REQUEST_READ, failureObserver, nativeMediaRequestException(error))
                 close()
                 report(if (cancelled) NativeMediaEvent.REQUEST_CANCELLED else NativeMediaEvent.REQUEST_FAILED)
                 throw IOException("Native media read failed")

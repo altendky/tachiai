@@ -25,7 +25,8 @@ class ProviderRouteStartupTest {
         override fun closeAndConfirm(): Boolean { closes++; events += "close:$name"; return confirms }
     }
     private inner class Fixture(routes: List<SourceRouteChoice> = listOf(a, b),
-        profiles: Map<String, ConnectionProfile> = mapOf(a.connectionId!! to profile(8080), b.connectionId!! to profile(8081))) {
+        profiles: Map<String, ConnectionProfile> = mapOf(a.connectionId!! to profile(8080), b.connectionId!! to profile(8081)),
+        skip: (ProviderRoutePoolSnapshot) -> Set<String> = { emptySet() }) {
         val pool = captured(routes, profiles)
         var now = 0L
         var current = true
@@ -33,7 +34,7 @@ class ProviderRouteStartupTest {
         val progress = mutableListOf<ProviderStartupProgress>()
         val scope = ProviderRouteStartup(pool, 1000, { now }, { current }, { progress += it }, { _, action ->
             alarm = action; AutoCloseable { alarm = null }
-        })
+        }, skipRouteIdentities = skip(pool))
     }
     private fun transport(failure: ProviderTransportFailure, phase: ProviderTransportPhase = ProviderTransportPhase.UNKNOWN,
         cancelled: Boolean = false) = ProviderStartupAttempt.Rejected(ProviderStartupRejection(ProviderStartupFailure.TRANSPORT,
@@ -355,5 +356,59 @@ class ProviderRouteStartupTest {
             ProviderStartupAttempt.Admitted("unregistered", lease)
         }))
         assertEquals(1, lease.closes); assertNull(unregistered.scope.selectedRoute)
+    }
+
+    // #271: a playback route switch walks from the top, skipping routes that
+    // already failed in its recovery pass, with the same classification.
+    private val three = mapOf(a.connectionId!! to profile(8080), b.connectionId!! to profile(8081), c.connectionId!! to profile(8082))
+    private fun identity(pool: ProviderRoutePoolSnapshot, choice: SourceRouteChoice) =
+        pool.candidates.single { it.choice == choice }.routeIdentity
+
+    @Test fun aPlaybackSwitchWalksFromTheTopSkippingOnlyTheFailedRoute() {
+        val f = Fixture(listOf(a, b, c), three) { pool -> setOf(identity(pool, b)) }
+        val calls = mutableListOf<SourceRouteChoice>()
+        val ready = f.scope.runReadOnly { owner, _ -> calls += owner.choice; ProviderStartupAttempt.Admitted("response") }
+            as ProviderStartupResult.Ready
+        assertEquals(listOf(a), calls); assertEquals(a, ready.owner.choice)
+        assertEquals(1, f.scope.progress.ordinal); assertEquals(3, f.scope.progress.count)
+        assertFalse(f.scope.progress.exhausted)
+    }
+
+    @Test fun aPlaybackSwitchContinuesOnlyOnAvailabilityFailuresAndStopsOnOthers() {
+        val f = Fixture(listOf(a, b, c), three) { pool -> setOf(identity(pool, a)) }
+        val calls = mutableListOf<SourceRouteChoice>()
+        val ready = f.scope.runReadOnly { owner, _ ->
+            calls += owner.choice
+            if (owner.choice == b) transport(ProviderTransportFailure.CONNECT) else ProviderStartupAttempt.Admitted("response")
+        } as ProviderStartupResult.Ready
+        assertEquals(listOf(b, c), calls); assertEquals(c, ready.owner.choice)
+        val refused = Fixture(listOf(a, b, c), three) { pool -> setOf(identity(pool, a)) }
+        var tries = 0
+        assertEquals(ProviderStartupFailure.AUTHENTICATION, reason(refused.scope.runReadOnly<Nothing> { _, _ ->
+            tries++; ProviderStartupAttempt.Rejected(ProviderStartupRejection(ProviderStartupFailure.AUTHENTICATION))
+        }))
+        assertEquals(1, tries); assertFalse(refused.scope.progress.exhausted)
+    }
+
+    @Test fun aPassWithNoWorkingRouteIsExhaustedWithoutSystemFallback() {
+        val f = Fixture(listOf(a, b, c), three) { pool -> setOf(identity(pool, a)) }
+        val calls = mutableListOf<SourceRouteChoice>()
+        assertEquals(ProviderStartupFailure.TRANSPORT, reason(f.scope.runReadOnly<Nothing> { owner, _ ->
+            calls += owner.choice; transport(ProviderTransportFailure.DNS)
+        }))
+        assertEquals(listOf(b, c), calls); assertTrue(f.scope.progress.exhausted)
+        // Every configured route already failed in this pass: nothing is tried.
+        val spent = Fixture(listOf(a, b)) { pool -> pool.candidates.map { it.routeIdentity }.toSet() }
+        assertEquals(ProviderStartupFailure.CHOICE_REQUIRED, reason(spent.scope.runReadOnly<Nothing> { _, _ ->
+            error("No skipped route or System fallback may be tried")
+        }))
+        assertTrue(spent.scope.progress.exhausted)
+        // A single configured route that failed has nowhere else to go.
+        val single = Fixture(listOf(a), mapOf(a.connectionId!! to profile(8080))) { pool -> setOf(identity(pool, a)) }
+        assertEquals(ProviderStartupFailure.CHOICE_REQUIRED, reason(single.scope.runReadOnly<Nothing> { _, _ -> error("Skipped") }))
+        // Without a skip set, an unconfigured instance is not reported as exhausted.
+        val empty = Fixture(emptyList(), emptyMap())
+        empty.scope.runReadOnly<Nothing> { _, _ -> error("No implicit System") }
+        assertFalse(empty.scope.progress.exhausted)
     }
 }

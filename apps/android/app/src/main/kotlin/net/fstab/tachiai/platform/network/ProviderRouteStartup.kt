@@ -78,6 +78,9 @@ internal class ProviderRouteStartup(
         AutoCloseable { future.cancel(false) }
     },
     private val canPublishLocally: () -> Boolean = { true },
+    // #271: a playback route switch walks the configured order from the top,
+    // skipping routes that already failed during this recovery pass.
+    private val skipRouteIdentities: Set<String> = emptySet(),
 ) : AutoCloseable {
     companion object {
         private val alarms = Executors.newSingleThreadScheduledExecutor { task ->
@@ -266,7 +269,10 @@ internal class ProviderRouteStartup(
             } else AutoCloseable {}
             try {
                 val fixed = selectedRoute
-                val candidates = if (fixed == null) pool.candidates.distinctBy { it.routeIdentity } else listOf(fixed.candidate)
+                val ordered = pool.candidates.distinctBy { it.routeIdentity }
+                val candidates = if (fixed == null) ordered.filterNot { it.routeIdentity in skipRouteIdentities }
+                    else listOf(fixed.candidate)
+                val skipped = fixed == null && candidates.size < ordered.size
                 var last = ProviderStartupRejection(ProviderStartupFailure.CHOICE_REQUIRED)
                 for (candidate in candidates) {
                     if (!current()) break
@@ -317,7 +323,10 @@ internal class ProviderRouteStartup(
                     }
                 }
                 if (failure() == null) {
-                    if (candidates.isNotEmpty() && last.retryable) synchronized(lock) { exhausted = true }
+                    // Every remaining configured route failed availability, or a
+                    // switch already tried each one: no configured route is working.
+                    if (candidates.isNotEmpty() && last.retryable || candidates.isEmpty() && skipped)
+                        synchronized(lock) { exhausted = true }
                     stop(last)
                 }
                 cleanup(synchronized(lock) { leases.values.toList() })

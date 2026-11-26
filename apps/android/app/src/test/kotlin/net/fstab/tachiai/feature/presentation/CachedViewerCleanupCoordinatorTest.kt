@@ -563,4 +563,25 @@ class CachedViewerCleanupCoordinatorTest {
         f.timeout(20_000); f.assertPoisoned()
     }
 
+    // #271: a playback route switch is a producer within the active run.
+    @Test fun routeSwitchProducerHoldsRouteClosingAndConfirmedSwitchedAwayRouteLeavesTheRun() {
+        val f = Fixture(); val run = f.begin(); val old = f.route(run, "old")
+        f.owner.preparation(run) { true }; f.owner.prepared(run, true)
+        assertTrue(f.owner.producing(run)); assertFalse(f.owner.producing(run))
+        f.owner.retireRoute(run, old, confirmed = true)
+        f.owner.end(run)
+        f.route(run, "new") // The switch's worker registers before posting its result.
+        f.finish(); assertFalse("close:new" in f.events)
+        f.owner.prepared(run, true); f.finish()
+        assertEquals(listOf("close:new"), f.events.filter { it.startsWith("close:") })
+        assertFalse(f.owner.unavailable)
+    }
+
+    @Test fun unconfirmedSwitchedAwayRouteEndsAndPoisonsTheRun() {
+        val f = Fixture(); val run = f.begin(); val old = f.route(run, "old")
+        f.owner.retireRoute(run, old, confirmed = false)
+        assertFalse(f.owner.current(run)); assertFalse(f.owner.producing(run))
+        f.finish(); f.assertPoisoned()
+        assertEquals(1, run.routes.size)
+    }
 }

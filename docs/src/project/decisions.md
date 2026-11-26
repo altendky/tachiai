@@ -73,6 +73,21 @@
   explicitly adding selected items. Tachiai usage tracking/local viewing logs
   are not authorized; a provider-export import remains a possible fallback
   requiring a format/privacy and UX decision.
+- On 2026-11-26 the user approved automatic route recovery during active
+  playback for all implementations
+  ([#271](https://github.com/altendky/tachiai/issues/271)). After a feed's
+  automatic retry burst on its route is exhausted by classified route
+  availability failures, every feed of that provider on the route moves to the
+  next working configured route, walking from the top and skipping only routes
+  that failed in that pass. One pass with no working route stops with Retry;
+  there is no endless cycling or System-network fallback. Authentication,
+  entitlement, provider denials, TLS, DRM and unsafe cleanup never change
+  routes. The [application flow](prototype-ux.md#automatic-route-recovery)
+  records the behavior. The same day the user also approved, for all
+  implementations, a per-feed route line in the viewer's Status panel (for
+  example `A route: Tokyo 2`, or `System network`) that follows each automatic
+  switch and Retry after exhaustion
+  ([#732](https://github.com/altendky/tachiai/pull/732)).
 - Playback and timing capabilities remain optional and source-dependent.
 - Alignment claims distinguish requested delay from measured media-clock
   synchronization.

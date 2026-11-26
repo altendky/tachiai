@@ -47,6 +47,7 @@ import net.fstab.tachiai.platform.media.NativeMixedSide
 import net.fstab.tachiai.platform.media.NativeQualityKind
 import net.fstab.tachiai.platform.media.NativeQualityRequest
 import net.fstab.tachiai.presentation.ViewerQualityReadback
+import net.fstab.tachiai.presentation.viewerRouteStatus
 import net.fstab.tachiai.presentation.ViewerPairOffsetReadback
 import net.fstab.tachiai.presentation.PairOffsetCorrespondence
 import net.fstab.tachiai.presentation.FloatingPosition
@@ -144,6 +145,8 @@ internal class NativePairViewer(
     // A feed's Translate text in video inputs (#664); null leaves the feature out.
     private val frameText: ((NativeMixedSide) -> FrameTextFeed?)? = null,
     selectedSlots: Set<NativeMixedSide> = NativeMixedSide.entries.toSet(),
+    // Each feed's current route name for Status; null omits its line.
+    private val routeStatus: (NativeMixedSide) -> String? = { null },
 ) : FrameLayout(context) {
     // Feed labels may change once a provider title's translation is ready (#643).
     private var labelA = labelA
@@ -1488,11 +1491,14 @@ internal class NativePairViewer(
         // Full status is in the Status panel; its changes show as brief notices.
         notices.observe(audioWarning + playbackStatus, selectedSides.associate { side ->
             side.name to (feedMessage(side) == null)
-        })?.let(::showNotice)
+        }, SystemClock.elapsedRealtime())?.let(::showNotice)
         val quality = available.mapIndexedNotNull { index, member ->
             member?.qualitySnapshot()?.let { "${if (index == 0) "A" else "B"} quality:\n${it.details()}" }
         }.joinToString("\n")
-        details.text = "$audioWarning$playbackStatus\n$adjustment" + if (quality.isEmpty()) "" else "\n$quality"
+        val routes = viewerRouteStatus(NativeMixedSide.entries.filter { it in selectedSides }.map { side ->
+            side.name to routeStatus(side) })
+        details.text = "$audioWarning$playbackStatus\n$adjustment" + (if (routes.isEmpty()) "" else "\n$routes") +
+            if (quality.isEmpty()) "" else "\n$quality"
         details.contentDescription = "Playback status: ${details.text}"
         adjustmentLabel.text = adjustment
         adjustmentLabel.contentDescription = "$labelA relative to $labelB: $adjustment"
@@ -1607,7 +1613,9 @@ internal class NativePairViewer(
         suspendControls(); clearNotice(); stage.unbindPlayers(); super.onDetachedFromWindow()
     }
     // A brief notice from the owner, such as where remembered positions resumed.
-    fun announce(message: String) { if (isAttachedToWindow && visibility == VISIBLE) showNotice(message) }
+    fun announce(message: String) {
+        if (isAttachedToWindow && visibility == VISIBLE) showNotice(notices.hold(message, SystemClock.elapsedRealtime()))
+    }
     private fun showNotice(message: String) {
         if (panel == "Status") return // The open panel already shows it.
         removeCallbacks(fadeNotice); statusNotice.animate().cancel()

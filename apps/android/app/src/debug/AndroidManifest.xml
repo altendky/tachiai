@@ -14,6 +14,13 @@
             android:authorities="${applicationId}.debug.abema-renewal"
             android:exported="true"
             android:permission="android.permission.DUMP" />
+        <!-- Route fault trigger (#271): shell only, in the cached viewer's process. -->
+        <provider
+            android:name=".feature.presentation.RouteFaultTriggerProvider"
+            android:authorities="${applicationId}.debug.route-fault"
+            android:exported="true"
+            android:permission="android.permission.DUMP"
+            android:process=":prototype_cached_player" />
         <activity
             android:name=".feature.diagnostic.InspectionControlActivity"
             android:theme="@style/Theme.Tachiai.Prototype"

@@ -74,6 +74,23 @@ internal class CachedViewerCleanupCoordinator(
         if (!confirmed) poison(run, FailureStage.ROUTE_CANCEL_UNCONFIRMED)
         else advance(run)
     }
+    // #271: a playback route switch is another producer within the active run.
+    // The run cannot close its routes until that worker posts prepared().
+    fun producing(run: Run): Boolean {
+        if (!current(run) || !run.producerFinished) return false
+        run.producerFinished = false
+        return true
+    }
+    // A switched-away route closed during the run. Only a confirmed close leaves
+    // run ownership; an uncertain one ends and poisons the run.
+    fun retireRoute(run: Run, route: AutoCloseable, confirmed: Boolean) {
+        if (owned !== run) return
+        if (confirmed) synchronized(run.routes) { run.routes.removeAll { it === route } }
+        else {
+            run.cleanupFailed = true
+            if (run.phase == Run.Phase.ACTIVE) end(run) else poison(run, FailureStage.ROUTE_CLOSE)
+        }
+    }
     fun closeFeed(run: Run, slot: Int): Boolean {
         if (owned !== run || run.phase != Run.Phase.ACTIVE) return false
         val entry = run.feeds[slot] ?: return true

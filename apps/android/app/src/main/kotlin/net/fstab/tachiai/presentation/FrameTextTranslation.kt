@@ -1,6 +1,8 @@
 package net.fstab.tachiai.presentation
 
+import androidx.media3.common.C
 import androidx.media3.common.Player
+import androidx.media3.common.Timeline
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.floor
@@ -206,6 +208,43 @@ internal fun frameTextBoxesOverlap(a: ViewerRect, b: ViewerRect, fraction: Float
 }
 
 /**
+ * The position change between two measurements against what playback
+ * explains: the elapsed time while playing at both, nothing while paused at
+ * both, and anything in between when playback started or stopped between
+ * them. [deltaMs] is how far the change fell outside that range.
+ */
+internal data class FrameTextPositionCheck(
+    val previousPositionMs: Long,
+    val positionMs: Long,
+    val elapsedMs: Long,
+    val expectedMs: Long,
+    val deltaMs: Long,
+    val jumped: Boolean,
+) {
+    val movedMs: Long get() = positionMs - previousPositionMs
+}
+
+internal fun frameTextPositionCheck(
+    previousPositionMs: Long,
+    previousAtMs: Long,
+    positionMs: Long,
+    atMs: Long,
+    wasPlaying: Boolean,
+    playing: Boolean,
+    toleranceMs: Long = FrameTextTuning.JUMP_TOLERANCE_MS,
+): FrameTextPositionCheck {
+    val elapsed = atMs - previousAtMs
+    val moved = positionMs - previousPositionMs
+    val expected = when {
+        wasPlaying && playing -> elapsed
+        wasPlaying || playing -> moved.coerceIn(0L, max(0L, elapsed))
+        else -> 0L
+    }
+    val delta = moved - expected
+    return FrameTextPositionCheck(previousPositionMs, positionMs, elapsed, expected, delta, abs(delta) > toleranceMs)
+}
+
+/**
  * True when the picture may have jumped between two samples: the position
  * moved by more than [toleranceMs] away from what playing (or staying paused)
  * explains. Catches jumps that report no seek, such as a resume after a hold.
@@ -217,10 +256,7 @@ internal fun frameTextPositionJumped(
     atMs: Long,
     playing: Boolean,
     toleranceMs: Long = FrameTextTuning.JUMP_TOLERANCE_MS,
-): Boolean {
-    val expected = if (playing) atMs - previousAtMs else 0L
-    return abs((positionMs - previousPositionMs) - expected) > toleranceMs
-}
+): Boolean = frameTextPositionCheck(previousPositionMs, previousAtMs, positionMs, atMs, playing, playing, toleranceMs).jumped
 
 /**
  * Only stable text is translated: the same recognized text in roughly the same
@@ -331,18 +367,103 @@ internal fun frameTextTranslateLog(ms: Long, translated: Boolean): String =
     "translate ms=$ms result=${if (translated) "TRANSLATED" else "ORIGINAL"}"
 
 /**
- * Player discontinuities that move the picture to another position or item:
- * a seek (transport, scrub, skip, Back to live, a timing shift), its
- * adjustment, a skipped ad or period, or a removed or changed item. Held text
- * and chips from before it are dropped.
+ * The playing position on the stream's own clock: the window's start time
+ * plus [positionMs] when the stream gives one (DASH live, HLS with program
+ * date times), otherwise the position from the start of the window's first
+ * period. A live window sliding forward, playback crossing into the next
+ * period or an old period leaving the window does not move it (#723).
  */
-internal fun frameTextResetsOn(reason: Int): Boolean = reason in setOf(
-    Player.DISCONTINUITY_REASON_SEEK,
-    Player.DISCONTINUITY_REASON_SEEK_ADJUSTMENT,
-    Player.DISCONTINUITY_REASON_SKIP,
-    Player.DISCONTINUITY_REASON_REMOVE,
-    Player.DISCONTINUITY_REASON_AUTO_TRANSITION,
-)
+internal fun frameTextStreamPositionMs(
+    timeline: Timeline,
+    windowIndex: Int,
+    positionMs: Long,
+    window: Timeline.Window = Timeline.Window(),
+): Long {
+    if (timeline.isEmpty || windowIndex !in 0 until timeline.windowCount) return positionMs
+    timeline.getWindow(windowIndex, window)
+    return positionMs + if (window.windowStartTimeMs != C.TIME_UNSET) window.windowStartTimeMs
+        else window.positionInFirstPeriodMs
+}
+
+/** Whether [frameTextStreamPositionMs] is measured from the window's start time. */
+internal fun frameTextWindowStartKnown(timeline: Timeline, windowIndex: Int, window: Timeline.Window = Timeline.Window()) =
+    !timeline.isEmpty && windowIndex in 0 until timeline.windowCount &&
+        timeline.getWindow(windowIndex, window).windowStartTimeMs != C.TIME_UNSET
+
+internal enum class FrameTextDiscontinuityAction { RESET, CHECK_POSITION, REBASE, IGNORE }
+
+/**
+ * What a player discontinuity means for held text and chips. A seek
+ * (transport, scrub, skip, Back to live, a timing shift), its adjustment, a
+ * skipped ad or period, or a move into another item changes the picture, so
+ * they are dropped. Playback moving on into the next period of the same item
+ * is never a jump, even where the stream clock does not line up across the
+ * boundary, as at ABEMA live ad and programme boundaries (#723): the jump
+ * check restarts from the new position. The current period leaving the
+ * timeline drops them only when the stream position jumped.
+ */
+internal fun frameTextDiscontinuityAction(reason: Int, sameItem: Boolean): FrameTextDiscontinuityAction =
+    when (reason) {
+        Player.DISCONTINUITY_REASON_SEEK,
+        Player.DISCONTINUITY_REASON_SEEK_ADJUSTMENT,
+        Player.DISCONTINUITY_REASON_SKIP,
+        -> FrameTextDiscontinuityAction.RESET
+        Player.DISCONTINUITY_REASON_AUTO_TRANSITION ->
+            if (sameItem) FrameTextDiscontinuityAction.REBASE else FrameTextDiscontinuityAction.RESET
+        Player.DISCONTINUITY_REASON_REMOVE ->
+            if (sameItem) FrameTextDiscontinuityAction.CHECK_POSITION else FrameTextDiscontinuityAction.RESET
+        else -> FrameTextDiscontinuityAction.IGNORE
+    }
+
+/** Whether [action] drops held text, given the position measured at the discontinuity. */
+internal fun frameTextDiscontinuityResets(action: FrameTextDiscontinuityAction, check: FrameTextPositionCheck?): Boolean =
+    when (action) {
+        FrameTextDiscontinuityAction.RESET -> true
+        FrameTextDiscontinuityAction.CHECK_POSITION -> check?.jumped == true
+        FrameTextDiscontinuityAction.REBASE, FrameTextDiscontinuityAction.IGNORE -> false
+    }
+
+private fun frameTextDiscontinuityReasonName(reason: Int) = when (reason) {
+    Player.DISCONTINUITY_REASON_AUTO_TRANSITION -> "AUTO_TRANSITION"
+    Player.DISCONTINUITY_REASON_SEEK -> "SEEK"
+    Player.DISCONTINUITY_REASON_SEEK_ADJUSTMENT -> "SEEK_ADJUSTMENT"
+    Player.DISCONTINUITY_REASON_SKIP -> "SKIP"
+    Player.DISCONTINUITY_REASON_REMOVE -> "REMOVE"
+    Player.DISCONTINUITY_REASON_INTERNAL -> "INTERNAL"
+    Player.DISCONTINUITY_REASON_SILENCE_SKIP -> "SILENCE_SKIP"
+    else -> "OTHER"
+}
+
+private fun windowStartName(known: Boolean) = if (known) "KNOWN" else "UNKNOWN"
+
+private fun FrameTextPositionCheck?.closedFields() = if (this == null)
+    "previousMs=UNKNOWN streamMs=UNKNOWN elapsedMs=UNKNOWN movedMs=UNKNOWN expectedMs=UNKNOWN deltaMs=UNKNOWN"
+    else "previousMs=$previousPositionMs streamMs=$positionMs elapsedMs=$elapsedMs movedMs=$movedMs " +
+        "expectedMs=$expectedMs deltaMs=$deltaMs"
+
+/**
+ * One discontinuity as closed names and numbers only: the Media3 reason,
+ * period indexes, Media3's own window-relative jump, the stream positions the
+ * jump check measured against the previous measurement, and what was done.
+ */
+internal fun frameTextDiscontinuityLog(
+    reason: Int,
+    fromPeriod: Int,
+    toPeriod: Int,
+    periods: Int,
+    sameItem: Boolean,
+    windowStartKnown: Boolean,
+    windowJumpMs: Long,
+    check: FrameTextPositionCheck?,
+    action: FrameTextDiscontinuityAction,
+    reset: Boolean,
+): String = "discontinuity reason=${frameTextDiscontinuityReasonName(reason)} from=$fromPeriod to=$toPeriod " +
+    "of=$periods sameItem=$sameItem windowStart=${windowStartName(windowStartKnown)} windowJumpMs=$windowJumpMs " +
+    "${check.closedFields()} action=${action.name} reset=$reset"
+
+/** A jump found between samples, with the same numbers as [frameTextDiscontinuityLog]. */
+internal fun frameTextPositionJumpLog(check: FrameTextPositionCheck, windowStartKnown: Boolean): String =
+    "positionJump windowStart=${windowStartName(windowStartKnown)} ${check.closedFields()}"
 
 internal enum class FrameTextResetCause { DISCONTINUITY, POSITION_JUMP, PLAYER_CHANGED }
 

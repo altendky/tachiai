@@ -1,5 +1,9 @@
 package net.fstab.tachiai.presentation
 
+import androidx.media3.common.AdPlaybackState
+import androidx.media3.common.C
+import androidx.media3.common.Player
+import androidx.media3.common.Timeline
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -297,13 +301,122 @@ class FrameTextTranslationTest {
     // ---- Position discontinuities ----
 
     @Test fun seeksSkipsAndItemChangesReset() {
-        listOf(androidx.media3.common.Player.DISCONTINUITY_REASON_SEEK,
-            androidx.media3.common.Player.DISCONTINUITY_REASON_SEEK_ADJUSTMENT,
-            androidx.media3.common.Player.DISCONTINUITY_REASON_SKIP,
-            androidx.media3.common.Player.DISCONTINUITY_REASON_REMOVE,
-            androidx.media3.common.Player.DISCONTINUITY_REASON_AUTO_TRANSITION).forEach { assertTrue(frameTextResetsOn(it)) }
-        assertFalse(frameTextResetsOn(androidx.media3.common.Player.DISCONTINUITY_REASON_INTERNAL))
-        assertFalse(frameTextResetsOn(androidx.media3.common.Player.DISCONTINUITY_REASON_SILENCE_SKIP))
+        listOf(Player.DISCONTINUITY_REASON_SEEK, Player.DISCONTINUITY_REASON_SEEK_ADJUSTMENT,
+            Player.DISCONTINUITY_REASON_SKIP).forEach { reason ->
+            listOf(true, false).forEach { assertEquals(FrameTextDiscontinuityAction.RESET, frameTextDiscontinuityAction(reason, it)) }
+        }
+        // A transition or removal into another item resets.
+        listOf(Player.DISCONTINUITY_REASON_AUTO_TRANSITION, Player.DISCONTINUITY_REASON_REMOVE).forEach {
+            assertEquals(FrameTextDiscontinuityAction.RESET, frameTextDiscontinuityAction(it, sameItem = false))
+        }
+        // Within the item, playback moving on restarts the jump check and a removal is checked.
+        assertEquals(FrameTextDiscontinuityAction.REBASE,
+            frameTextDiscontinuityAction(Player.DISCONTINUITY_REASON_AUTO_TRANSITION, sameItem = true))
+        assertEquals(FrameTextDiscontinuityAction.CHECK_POSITION,
+            frameTextDiscontinuityAction(Player.DISCONTINUITY_REASON_REMOVE, sameItem = true))
+        // A seek resets whatever the position check found, even with nothing measured yet.
+        assertTrue(frameTextDiscontinuityResets(FrameTextDiscontinuityAction.RESET, null))
+        assertTrue(frameTextDiscontinuityResets(FrameTextDiscontinuityAction.RESET,
+            frameTextPositionCheck(60_000, 1_000, 62_000, 3_000, wasPlaying = true, playing = true)))
+        listOf(Player.DISCONTINUITY_REASON_INTERNAL, Player.DISCONTINUITY_REASON_SILENCE_SKIP).forEach {
+            assertEquals(FrameTextDiscontinuityAction.IGNORE, frameTextDiscontinuityAction(it, sameItem = true))
+        }
+    }
+
+    @Test fun playingAcrossALivePeriodBoundaryDoesNotReset() {
+        // An ad period [0 s, 15 s) then a programme period, both in the live window.
+        val periods = listOf(0L to 15_000L, 15_000L to 600_000L)
+        val before = LiveTimeline(periods, offsetInFirstPeriodMs = 5_000)
+        // 13 s into the ad, then 2 s later 0.2 s into the programme while the window slid 2 s.
+        val previous = frameTextStreamPositionMs(before, 0, 13_000 - 5_000)
+        val after = LiveTimeline(periods, offsetInFirstPeriodMs = 7_000)
+        val position = frameTextStreamPositionMs(after, 0, 15_200 - 7_000)
+        assertEquals(AVAILABILITY_START_MS + 13_000, previous)
+        assertEquals(AVAILABILITY_START_MS + 15_200, position)
+        val action = frameTextDiscontinuityAction(Player.DISCONTINUITY_REASON_AUTO_TRANSITION, sameItem = true)
+        assertFalse(frameTextDiscontinuityResets(action,
+            frameTextPositionCheck(previous, 1_000, position, 3_000, wasPlaying = true, playing = true)))
+        assertFalse(frameTextPositionJumped(previous, 1_000, position, 3_000, playing = true))
+        // Seeking back 30 s in the same window is still a jump.
+        assertTrue(frameTextPositionJumped(position, 3_000, position - 30_000, 5_000, playing = true))
+    }
+
+    @Test fun aPeriodLeavingTheWindowWhilePlayingContinuouslyDoesNotReset() {
+        // The window starts 0.5 s before the programme, which plays 20 s in.
+        val before = LiveTimeline(listOf(0L to 15_000L, 15_000L to 600_000L), offsetInFirstPeriodMs = 14_500)
+        val previous = frameTextStreamPositionMs(before, 0, 35_000 - 14_500)
+        // 2 s later the ad period has left the window: the programme is first and the window starts 1.5 s into it.
+        val after = LiveTimeline(listOf(15_000L to 600_000L), offsetInFirstPeriodMs = 1_500)
+        val position = frameTextStreamPositionMs(after, 0, 37_000 - 15_000 - 1_500)
+        assertEquals(AVAILABILITY_START_MS + 37_000, position)
+        assertEquals(FrameTextDiscontinuityAction.CHECK_POSITION,
+            frameTextDiscontinuityAction(Player.DISCONTINUITY_REASON_REMOVE, sameItem = true))
+        assertFalse(frameTextPositionJumped(previous, 1_000, position, 3_000, playing = true))
+        // A removal that moves playback (fallen behind the window) still resets.
+        val moved = frameTextStreamPositionMs(after, 0, 60_000 - 15_000 - 1_500)
+        assertTrue(frameTextPositionJumped(previous, 1_000, moved, 3_000, playing = true))
+    }
+
+    @Test fun anAdBoundaryWhoseStreamClockDoesNotLineUpDoesNotReset() {
+        // The programme's declared end and the ad's declared start leave an 8 s gap on the stream clock.
+        val timeline = LiveTimeline(listOf(0L to 60_000L, 68_000L to 30_000L), offsetInFirstPeriodMs = 10_000)
+        val previous = frameTextStreamPositionMs(timeline, 0, 59_000 - 10_000)
+        // 1 s later playback moves on into the ad, at its start.
+        val position = frameTextStreamPositionMs(timeline, 0, 68_000 - 10_000)
+        val check = frameTextPositionCheck(previous, 1_000, position, 2_000, wasPlaying = true, playing = true)
+        assertEquals(9_000, check.movedMs)
+        assertEquals(1_000, check.expectedMs)
+        assertEquals(8_000, check.deltaMs)
+        assertTrue(check.jumped)
+        val transition = frameTextDiscontinuityAction(Player.DISCONTINUITY_REASON_AUTO_TRANSITION, sameItem = true)
+        assertFalse(frameTextDiscontinuityResets(transition, check))
+        // The check restarts from the ad's start, so the next sample 2.2 s later is no jump.
+        val next = frameTextStreamPositionMs(timeline, 0, 70_200 - 10_000)
+        assertFalse(frameTextPositionJumped(position, 2_000, next, 4_200, playing = true))
+        // The same offset after the current period was removed is a jump.
+        val removal = frameTextDiscontinuityAction(Player.DISCONTINUITY_REASON_REMOVE, sameItem = true)
+        assertTrue(frameTextDiscontinuityResets(removal, check))
+    }
+
+    @Test fun playbackStartingOrStoppingBetweenMeasurementsIsNoJump() {
+        // Buffering at a boundary 3.5 s after the last sample, having played up to it.
+        val buffering = frameTextPositionCheck(60_000, 1_000, 63_500, 4_500, wasPlaying = true, playing = false)
+        assertEquals(3_500, buffering.expectedMs)
+        assertFalse(buffering.jumped)
+        // Resuming after buffering, having played for part of the interval.
+        assertFalse(frameTextPositionCheck(60_000, 1_000, 61_000, 4_500, wasPlaying = false, playing = true).jumped)
+        // Moving back, or further than the elapsed time explains, is still a jump.
+        assertTrue(frameTextPositionCheck(60_000, 1_000, 56_000, 4_500, wasPlaying = true, playing = false).jumped)
+        assertTrue(frameTextPositionCheck(60_000, 1_000, 70_000, 4_500, wasPlaying = false, playing = true).jumped)
+    }
+
+    @Test fun discontinuityDiagnosticsAreNumbersAndClosedNames() {
+        val check = frameTextPositionCheck(1_000_059_000, 1_000, 1_000_068_000, 2_000, wasPlaying = true, playing = true)
+        assertEquals("discontinuity reason=AUTO_TRANSITION from=1 to=2 of=3 sameItem=true windowStart=KNOWN " +
+            "windowJumpMs=9000 previousMs=1000059000 streamMs=1000068000 elapsedMs=1000 movedMs=9000 expectedMs=1000 " +
+            "deltaMs=8000 action=REBASE reset=false",
+            frameTextDiscontinuityLog(Player.DISCONTINUITY_REASON_AUTO_TRANSITION, 1, 2, 3, sameItem = true,
+                windowStartKnown = true, windowJumpMs = 9_000, check = check, action = FrameTextDiscontinuityAction.REBASE,
+                reset = false))
+        assertEquals("discontinuity reason=SEEK from=0 to=0 of=1 sameItem=true windowStart=UNKNOWN windowJumpMs=-30000 " +
+            "previousMs=UNKNOWN streamMs=UNKNOWN elapsedMs=UNKNOWN movedMs=UNKNOWN expectedMs=UNKNOWN deltaMs=UNKNOWN " +
+            "action=RESET reset=true",
+            frameTextDiscontinuityLog(Player.DISCONTINUITY_REASON_SEEK, 0, 0, 1, sameItem = true, windowStartKnown = false,
+                windowJumpMs = -30_000, check = null, action = FrameTextDiscontinuityAction.RESET, reset = true))
+        assertEquals("positionJump windowStart=KNOWN previousMs=1000059000 streamMs=1000068000 elapsedMs=1000 " +
+            "movedMs=9000 expectedMs=1000 deltaMs=8000", frameTextPositionJumpLog(check, windowStartKnown = true))
+        assertTrue(frameTextWindowStartKnown(LiveTimeline(listOf(0L to 15_000L), offsetInFirstPeriodMs = 0), 0))
+        assertFalse(frameTextWindowStartKnown(LiveTimeline(listOf(0L to 15_000L), offsetInFirstPeriodMs = 0,
+            availabilityStartMs = C.TIME_UNSET), 0))
+        assertFalse(frameTextWindowStartKnown(Timeline.EMPTY, 0))
+    }
+
+    @Test fun withoutAWindowStartTimeTheStreamPositionIsFromTheFirstPeriod() {
+        val replay = LiveTimeline(listOf(0L to 15_000L, 15_000L to 600_000L), offsetInFirstPeriodMs = 0,
+            availabilityStartMs = C.TIME_UNSET)
+        assertEquals(14_000, frameTextStreamPositionMs(replay, 0, 14_000))
+        assertEquals(16_000, frameTextStreamPositionMs(replay, 0, 16_000))
+        assertEquals(16_000, frameTextStreamPositionMs(Timeline.EMPTY, 0, 16_000))
     }
 
     @Test fun positionJumpsBeyondPlaybackAreDetected() {
@@ -332,5 +445,39 @@ class FrameTextTranslationTest {
         assertTrue(pipeline.process(sample, 1, 2_000).isEmpty())
         assertEquals(2, sample.recognitions)
         assertEquals(listOf("Caption EN"), pipeline.process(sample, 1, 2_000).map { it.text })
+    }
+
+    /**
+     * A live window over consecutive periods (start, duration in ms), shaped
+     * like Media3's DASH timeline: the window starts [offsetInFirstPeriodMs]
+     * into the first period and its start time is the availability start plus
+     * that period's start and the offset.
+     */
+    private class LiveTimeline(
+        private val periods: List<Pair<Long, Long>>,
+        private val offsetInFirstPeriodMs: Long,
+        private val availabilityStartMs: Long = AVAILABILITY_START_MS,
+    ) : Timeline() {
+        override fun getWindowCount() = 1
+        override fun getWindow(windowIndex: Int, window: Window, defaultPositionProjectionUs: Long): Window {
+            val firstStartMs = periods.first().first
+            val endMs = periods.last().let { it.first + it.second }
+            return window.set(Window.SINGLE_WINDOW_UID, null, null, availabilityStartMs,
+                if (availabilityStartMs == C.TIME_UNSET) C.TIME_UNSET else availabilityStartMs + firstStartMs + offsetInFirstPeriodMs,
+                C.TIME_UNSET, true, availabilityStartMs != C.TIME_UNSET, null, 0,
+                (endMs - firstStartMs - offsetInFirstPeriodMs) * 1_000, 0, periods.size - 1, offsetInFirstPeriodMs * 1_000)
+        }
+        override fun getPeriodCount() = periods.size
+        override fun getPeriod(periodIndex: Int, period: Period, setIds: Boolean): Period {
+            val (startMs, durationMs) = periods[periodIndex]
+            return period.set(startMs, startMs, 0, durationMs * 1_000,
+                (startMs - periods.first().first - offsetInFirstPeriodMs) * 1_000, AdPlaybackState.NONE, false)
+        }
+        override fun getIndexOfPeriod(uid: Any) = periods.indexOfFirst { it.first == uid }
+        override fun getUidOfPeriod(periodIndex: Int): Any = periods[periodIndex].first
+    }
+
+    private companion object {
+        const val AVAILABILITY_START_MS = 1_790_000_000_000L
     }
 }

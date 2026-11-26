@@ -155,9 +155,10 @@ internal class NativeHlsLiveRecorder(
         newestEndMs = maxOf(newestEndMs ?: Long.MIN_VALUE, current.last().endMs)
         prune()
 
-        cache.publish((prepended + current).associate { entry ->
+        // Listed segments are consecutive media sequence numbers from firstOut.
+        cache.publish((prepended + current).withIndex().associate { (index, entry) ->
             entry.uri to NativeLiveSegmentCache.Segment(HLS_PERIOD, 0, C.TRACK_TYPE_DEFAULT, entry.rendition, 0,
-                Math.multiplyExact(entry.startMs, 1000L), entry.startMs, entry.endMs, false)
+                Math.multiplyExact(entry.startMs, 1000L), entry.startMs, entry.endMs, false, firstOut + index)
         }, totalMs, rendition = key)
 
         report(Refresh(own.index, current.size, current.count { cache.cached(it.uri) }, prepended.size,
@@ -193,7 +194,8 @@ internal class NativeHlsLiveRecorder(
             "providerCached=${refresh.providerCached} retained=${refresh.retained} retainedMs=${refresh.retainedMs} " +
             "firstSeq=${refresh.firstSequence} discSeq=${refresh.discontinuitySequence} stop=${refresh.stop} " +
             "reset=${refresh.reset} shrank=$shrank cacheBytes=${c.bytes} cacheBodies=${c.bodies} spanMs=${c.spanMs} " +
-            "behindMs=${c.behindLiveMs} recorded=${c.recorded} recordFailed=${c.recordFailures} " +
+"behindMs=${c.behindLiveMs} recorded=${c.recorded} recordSkipped=${c.recordSkipped} " +
+            "recordFetchFailed=${c.recordFetchFailed} recordNotStored=${c.recordNotStored} " +
             "evictedHorizon=${c.evictedByHorizon} evictedBytes=${c.evictedByBytes} inFlight=${c.inFlight}")
     }
 

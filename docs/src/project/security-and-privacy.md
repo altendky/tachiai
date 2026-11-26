@@ -174,9 +174,12 @@ What is retained:
   ([#618](https://github.com/altendky/tachiai/issues/618)). Replays are not
   included.
 - **Content.** The media bytes this feed's player fetched, plus segments of the
-  rendition the player is using that the cache fetches just before they leave
-  the provider's window. Every request goes through the same bounded,
-  allowlisted, budgeted transport as the player.
+  rendition the player is using that the cache fetches before they leave the
+  provider's window: 30 s before, or for a short window (Twitch's ~30 s) once
+  a segment is a quarter of the window old. At most two recordings run at a
+  time, and an HLS media sequence already recorded in any rendition is not
+  recorded again. Every request goes through the same bounded, allowlisted,
+  budgeted transport as the player.
   - A background recording that is refused or fails only narrows the window. It
     is not reported as the feed's failure; the playback budget is the exception.
     A segment that has left the manifest while its recording waited is not

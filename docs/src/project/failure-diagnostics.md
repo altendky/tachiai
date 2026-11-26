@@ -153,7 +153,11 @@ provider's window and their duration, the first media sequence, the
 discontinuity sequence, why splicing stopped (`PREVIOUS_START`,
 `NOT_DECLARED`, `NOT_CACHED`, `HORIZON`, `DISCONTINUITY`, `SIZE`,
 `COUNT`, `SEQUENCE_START`), any history reset, and the cache's bytes, span,
-distance behind live and recording and eviction counts. A playing feed whose
+distance behind live and eviction counts. Background recordings are counted
+by outcome: `recorded`, `recordSkipped` (the segment had left the playlist
+when its turn came), `recordFetchFailed` (network, HTTP, admission or
+cancellation) and `recordNotStored` (fetched but not kept: no longer listed,
+evicted on arrival or incomplete). A playing feed whose
 loaded media all lies before its window logs `oldestResume playing` with its
 positions when it is moved to the oldest listed point. No playlist or segment
 URL, header or media is logged.

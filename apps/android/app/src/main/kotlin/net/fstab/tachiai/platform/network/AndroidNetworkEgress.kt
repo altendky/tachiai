@@ -20,6 +20,8 @@ internal class AndroidNetworkEgress(
         bind = ::bindDescriptor,
     )
     private val trackedFactory by lazy { scope.trackedSocketFactory(network.socketFactory) }
+    private val deadlineElapsedMs = deadlineNanos / 1_000_000L
+    override val routeJob get() = RouteJobNetwork(network, deadlineElapsedMs)
 
     override val socketFactory: SocketFactory
         get() {

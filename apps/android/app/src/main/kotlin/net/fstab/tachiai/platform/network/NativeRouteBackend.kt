@@ -20,15 +20,17 @@ internal class NativeRouteBackend(private val route: Route, purpose: RoutePurpos
 
         // Explicit opt-in only; ordinary route factories retain their existing
         // behavior. Unsupported transports must not fall back to System.
+        // WireGuard leases from the process's route owner (#275 stage 5): it
+        // joins a held device or starts one bound to this job's Network.
         fun createBound(profile: ConnectionProfile?, security: RouteProxySecurity,
-            preparation: RoutePreparation, binding: NetworkBinding): RouteBackend {
+            preparation: RoutePreparation, binding: RouteNetworkEgress): RouteBackend {
             try {
                 preparation.checkActive()
                 check(binding.isActive())
+                if (profile?.protocol === WireGuardRouteProtocol) return WireGuardRouteProtocol.createJobBackend(profile,
+                    security, preparation, binding.routeJob ?: throw java.io.IOException("Bound route unsupported"))
                 val route = when (profile?.protocol) {
                     null -> Routebridge.newSystemBound(security.username, security.password, security.realm, security.allowedHosts, binding)
-                    WireGuardRouteProtocol -> Routebridge.newWireGuardBound(profile.configuration, security.username, security.password,
-                        security.realm, security.allowedHosts, binding)
                     HttpProxyRouteProtocol -> Routebridge.newHttpProxyBound(profile.configuration, security.username, security.password,
                         security.realm, security.allowedHosts, binding)
                     Socks5RouteProtocol -> Routebridge.newSocks5Bound(profile.configuration, security.username, security.password,

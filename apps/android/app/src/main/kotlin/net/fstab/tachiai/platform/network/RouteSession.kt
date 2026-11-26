@@ -154,10 +154,18 @@ internal class RouteSession private constructor(
     fun matchesProxyChallenge(host: String, realm: String) = hasProxyBridge && !closed.get() &&
         host == "127.0.0.1" && realm == proxyRealm
 
+    // The first unconfirmed close step, as a closed constant for diagnostic logs.
+    @Volatile var cleanupFailure: String? = null
+        private set
+    private fun failedStep(label: String) { if (cleanupFailure == null) cleanupFailure = label }
+    private fun step(label: String, action: () -> Unit): () -> Unit = {
+        try { action() } catch (error: Throwable) { failedStep(label); throw error }
+    }
+
     override fun close() {
         if (networkEgress != null) synchronized(networkCloseLock) {
             if (!closed.compareAndSet(false, true)) {
-                if (!networkCloseFinished) networkCleanupFailed.set(true)
+                if (!networkCloseFinished) { networkCleanupFailed.set(true); failedStep("CONCURRENT_CLOSE") }
                 if (networkCleanupFailed.get()) throw IOException("Route cleanup failed")
                 return
             }
@@ -167,29 +175,29 @@ internal class RouteSession private constructor(
         var failed = false
         try {
             val networkBefore: List<Pair<FailureStage, () -> Unit>> = if (networkEgress == null) emptyList() else
-                listOf(FailureStage.ROUTE_CANCEL_REQUESTS to { networkEgress.cancel() })
+                listOf(FailureStage.ROUTE_CANCEL_REQUESTS to step("NETWORK_CANCEL") { networkEgress.cancel() })
             val networkAfter: List<Pair<FailureStage, () -> Unit>> = if (networkEgress == null) emptyList() else listOf(
-                FailureStage.ROUTE_BACKEND_CLOSE to { networkEgress.closeOwnedSockets() },
-                FailureStage.ROUTE_BACKEND_CLOSE to {
+                FailureStage.ROUTE_BACKEND_CLOSE to step("NETWORK_SOCKETS") { networkEgress.closeOwnedSockets() },
+                FailureStage.ROUTE_BACKEND_CLOSE to step("NETWORK_SCOPE") {
                     if (!networkEgress.isCleanupConfirmed()) {
                         networkEgress.reportCleanupUnconfirmed()
                         throw IOException("Network cleanup unconfirmed")
                     }
                 },
-                FailureStage.ROUTE_CANCEL to { networkCancellation?.close() },
+                FailureStage.ROUTE_CANCEL to step("NETWORK_HOOK") { networkCancellation?.close() },
             )
             for ((stage, cleanup) in networkBefore + listOf<Pair<FailureStage, () -> Unit>>(
             FailureStage.ROUTE_DISCONNECT to {
                 connections.forEach { connection ->
                     if (diagnostics.cleanupAll(FailureStage.ROUTE_DISCONNECT) { connection.disconnect() })
                         connections.remove(connection)
-                    else failed = true
+                    else { failed = true; failedStep("DISCONNECT") }
                 }
             },
-            FailureStage.ROUTE_CANCEL_REQUESTS to { client?.dispatcher?.cancelAll() },
-            FailureStage.ROUTE_CONNECTION_POOL to { client?.connectionPool?.evictAll() },
-            FailureStage.ROUTE_EXECUTOR to { client?.dispatcher?.executorService?.shutdownNow() },
-            FailureStage.ROUTE_BACKEND_CLOSE to { backend?.close() },
+            FailureStage.ROUTE_CANCEL_REQUESTS to step("REQUESTS") { client?.dispatcher?.cancelAll() },
+            FailureStage.ROUTE_CONNECTION_POOL to step("POOL") { client?.connectionPool?.evictAll() },
+            FailureStage.ROUTE_EXECUTOR to step("EXECUTOR") { client?.dispatcher?.executorService?.shutdownNow() },
+            FailureStage.ROUTE_BACKEND_CLOSE to step("BACKEND") { backend?.close() },
             ) + networkAfter) if (!diagnostics.cleanupAll(stage, cleanup)) failed = true
         } catch (error: Throwable) {
             failed = true

@@ -1,5 +1,6 @@
 package net.fstab.tachiai.platform.network
 
+import android.net.Network
 import java.io.IOException
 import java.security.SecureRandom
 import java.util.concurrent.ConcurrentLinkedQueue
@@ -11,32 +12,46 @@ import java.util.concurrent.TimeUnit
 // owner in the ordinary process (#275). Configuration never crosses Binder:
 // the owner re-reads the saved profile matching the digest and derives the
 // allowed hosts from the closed purpose. Lease credentials cross once, in OPEN.
+// A renewal job's OPEN (stage 5) also carries the job's Network and deadline,
+// which the owner uses only to start a job-bound device when none is held.
 internal object RouteLeaseIpc {
     const val OPEN = 1; const val CLOSE = 2; const val READY = 3; const val REVOKED = 4; const val CLOSED = 5
     const val IPC_MS = 5000L
+    // A renewal job's whole operation limit.
+    const val JOB_MS = 90_000L
     class Open(val nonce: String, val digest: String, val purpose: RoutePurpose, val username: String,
-        val password: String, val realm: String, val deadline: Long) {
+        val password: String, val realm: String, val deadline: Long, val job: RouteJobNetwork? = null) {
         override fun toString() = "RouteLeaseOpen(redacted)"
     }
     class Reply(val what: Int, val sequence: Long, val port: Int = 0, val confirmed: Boolean = false)
     private val base = setOf("nonce", "sequence")
     private val openKeys = base + setOf("digest", "purpose", "username", "password", "realm", "deadline")
+    private val jobKeys = openKeys + setOf("network", "until")
     // Matches routebridge's local credential pattern.
     private val credential = Regex("[A-Za-z0-9_-]{16,128}")
 
+    private val knownKeys = jobKeys + setOf("port", "confirmed")
+
     fun fields(values: Map<String, Any?>): Map<String, Any>? {
-        if (values.size !in base.size..openKeys.size) return null
+        if (values.size !in base.size..jobKeys.size) return null
         var size = 0
         return buildMap {
             for ((key, value) in values) {
-                if (key.length > 16 || (value !is String && value !is Long && value !is Boolean)) return null
+                val typed = value is String || value is Long || value is Boolean || key == "network" && value is Network
+                if (key !in knownKeys || !typed) return null
                 if (value is String) { size += value.length; if (value.length > 128 || size > 1024) return null }
-                put(key, value)
+                put(key, checkNotNull(value))
             }
         }
     }
     fun open(fields: Map<String, Any>, now: Long): Open? {
-        if (fields.keys != openKeys || fields["sequence"] != 1L || now < 0) return null
+        val job = if (fields.keys == jobKeys) {
+            val until = fields["until"] as? Long ?: return null
+            val network = fields["network"] as? Network ?: return null
+            if (until <= now || until - now > JOB_MS) return null
+            RouteJobNetwork(network, until)
+        } else null
+        if ((job == null && fields.keys != openKeys) || fields["sequence"] != 1L || now < 0) return null
         val nonce = fields["nonce"] as? String ?: return null
         val digest = fields["digest"] as? String ?: return null
         val purpose = RoutePurpose.entries.singleOrNull { it.name == fields["purpose"] } ?: return null
@@ -47,11 +62,12 @@ internal object RouteLeaseIpc {
         if (!nonce.matches(Regex("[a-f0-9]{32}")) || !digest.matches(Regex("[a-f0-9]{64}")) ||
             listOf(username, password, realm).any { !credential.matches(it) } ||
             deadline <= now || deadline - now > IPC_MS) return null
-        return Open(nonce, digest, purpose, username, password, realm, deadline)
+        return Open(nonce, digest, purpose, username, password, realm, deadline, job)
     }
     fun openFields(open: Open): Map<String, Any> = mapOf("nonce" to open.nonce, "sequence" to 1L, "digest" to open.digest,
         "purpose" to open.purpose.name, "username" to open.username, "password" to open.password,
-        "realm" to open.realm, "deadline" to open.deadline)
+        "realm" to open.realm, "deadline" to open.deadline) +
+        (open.job?.let { mapOf("network" to it.network, "until" to it.deadlineElapsedMs) } ?: emptyMap())
     // Client CLOSE: the lease's nonce and a sequence after the last one seen.
     fun close(fields: Map<String, Any>, nonce: String, after: Long): Long? {
         val sequence = fields["sequence"] as? Long ?: return null
@@ -73,13 +89,17 @@ internal object RouteLeaseIpc {
 
 // Owner side: only a saved WireGuard profile with exactly this digest, with
 // hosts derived from the purpose. Other protocols keep their local backends.
+// A job OPEN takes the owner's job path: join, or start a job-bound device.
 internal fun grantRouteLease(request: RouteLeaseIpc.Open, configured: (String) -> ConnectionProfile?,
+    leaseForJob: (ConnectionProfile, RouteProxySecurity, RouteJobNetwork) -> RouteBackend = { _, _, _ ->
+        throw IOException("Job route unavailable") },
     lease: (ConnectionProfile, RouteProxySecurity) -> RouteBackend): RouteBackend {
     val profile = configured(request.digest)?.takeIf {
         it.protocol === WireGuardRouteProtocol && routeConfigurationKey(it) == request.digest
     } ?: throw IOException("Route profile unavailable")
-    return lease(profile, RouteProxySecurity(request.username, request.password, request.realm,
-        request.purpose.allowedHosts, request.purpose))
+    val security = RouteProxySecurity(request.username, request.password, request.realm,
+        request.purpose.allowedHosts, request.purpose)
+    return request.job?.let { leaseForJob(profile, security, it) } ?: lease(profile, security)
 }
 
 // One owner-side lease per OPEN: at most one READY, then exactly one CLOSED
@@ -91,8 +111,12 @@ internal class RouteLeaseGrant(
     private val send: (Int, Map<String, Any>) -> Unit,
     private val execute: (Runnable) -> Unit,
     private val now: () -> Long,
-    private val closeMs: Long = 2000,
+    // Inside the client's IPC_MS wait for CLOSED, so a slow but completed
+    // close is still reported as confirmed (#275 stage 5).
+    private val closeMs: Long = RouteLeaseIpc.IPC_MS - 1000,
     private val closed: (Boolean) -> Unit = {},
+    // Closed reason for an unconfirmed close; never a host or credential.
+    private val log: (String) -> Unit = {},
 ) {
     private enum class State { GRANTING, READY, ENDING }
     private val lock = Any()
@@ -129,17 +153,26 @@ internal class RouteLeaseGrant(
 
     private fun onWorker(action: () -> Unit) {
         try { execute(Runnable(action)) }
-        catch (_: Throwable) { reply(RouteLeaseIpc.CLOSED, mapOf("confirmed" to false)); closed(false) }
+        catch (_: Throwable) {
+            log("LEASE_CLOSE_UNCONFIRMED reason=REJECTED")
+            reply(RouteLeaseIpc.CLOSED, mapOf("confirmed" to false)); closed(false)
+        }
     }
 
     private fun finish(held: RouteBackend?) {
-        val confirmed = held == null || runCatching {
+        val failure = if (held == null) null else try {
             val task = FutureTask { held.close() }
             execute(task)
             task.get(closeMs, TimeUnit.MILLISECONDS)
-        }.isSuccess
-        reply(RouteLeaseIpc.CLOSED, mapOf("confirmed" to confirmed))
-        closed(confirmed)
+            null
+        } catch (_: java.util.concurrent.TimeoutException) { "TIMEOUT" }
+        catch (_: java.util.concurrent.ExecutionException) { "FAILED" }
+        catch (error: Throwable) {
+            if (error is InterruptedException) { Thread.currentThread().interrupt(); "INTERRUPTED" } else "REJECTED"
+        }
+        failure?.let { log("LEASE_CLOSE_UNCONFIRMED reason=$it") }
+        reply(RouteLeaseIpc.CLOSED, mapOf("confirmed" to (failure == null)))
+        closed(failure == null)
     }
 
     private fun reply(what: Int, extra: Map<String, Any> = emptyMap()) = synchronized(lock) {
@@ -171,20 +204,23 @@ internal class RemoteRouteLeaseBackend private constructor(
     private val request: RouteLeaseIpc.Open,
     private val now: () -> Long,
     private val waitMs: Long,
+    // Closed reason for an unconfirmed close; never a host or credential.
+    private val log: (String) -> Unit,
 ) : RouteBackend, RouteLeaseChannel.Events {
     companion object {
         private val retained = ConcurrentLinkedQueue<Any>()
         private val random = SecureRandom()
 
         fun open(channel: RouteLeaseChannel, profile: ConnectionProfile, security: RouteProxySecurity,
-            preparation: RoutePreparation, now: () -> Long, waitMs: Long = RouteLeaseIpc.IPC_MS): RouteBackend {
+            preparation: RoutePreparation, now: () -> Long, waitMs: Long = RouteLeaseIpc.IPC_MS,
+            job: RouteJobNetwork? = null, log: (String) -> Unit = {}): RouteBackend {
             preparation.checkActive()
             val purpose = checkNotNull(security.purpose)
             check(profile.protocol === WireGuardRouteProtocol && purpose.allowedHosts == security.allowedHosts)
             val nonce = ByteArray(16).also(random::nextBytes).joinToString("") { "%02x".format(it) }
             val request = RouteLeaseIpc.Open(nonce, routeConfigurationKey(profile), purpose,
-                security.username, security.password, security.realm, now() + waitMs)
-            val lease = RemoteRouteLeaseBackend(channel, request, now, waitMs)
+                security.username, security.password, security.realm, now() + waitMs, job)
+            val lease = RemoteRouteLeaseBackend(channel, request, now, waitMs, log)
             var hook: AutoCloseable? = null
             try {
                 hook = preparation.onCancel(lease::cancel)
@@ -268,9 +304,16 @@ internal class RemoteRouteLeaseBackend private constructor(
             try { done.await(waitMs, TimeUnit.MILLISECONDS) }
             catch (_: InterruptedException) { Thread.currentThread().interrupt() }
         }
-        val confirmed = synchronized(lock) { !opened || ownerGone || closedConfirmed == true }
+        val (confirmed, reply) = synchronized(lock) { (!opened || ownerGone || closedConfirmed == true) to closedConfirmed }
         val released = runCatching { channel.release() }.isSuccess
-        if (!confirmed || !released) { retained.add(this); throw IOException("Route lease cleanup unconfirmed") }
+        if (!confirmed || !released) {
+            log("LEASE_CLOSE_UNCONFIRMED reason=" + when {
+                !confirmed && reply == false -> "OWNER_UNCONFIRMED"
+                !confirmed -> "NO_REPLY"
+                else -> "RELEASE_FAILED"
+            })
+            retained.add(this); throw IOException("Route lease cleanup unconfirmed")
+        }
     }
 
     override fun toString() = "RemoteRouteLeaseBackend(secrets hidden)"
@@ -279,7 +322,7 @@ internal class RemoteRouteLeaseBackend private constructor(
 // The single process decision: the playback, ABEMA guest and approval-browser
 // processes lease WireGuard devices from the ordinary process (#275 stage 4), so
 // one key pair never runs two devices beside a playing feed. The renewal job's
-// Network-bound devices remain separate (stage 5).
+// leases, including the approval browser's, come from the same owner (stage 5).
 internal fun routeLeasesFromOwner(processName: String?, packageName: String) =
     processName in setOf("$packageName:prototype_cached_player", "$packageName:abema_guest_bootstrap",
         "$packageName:abema_approval_browser")

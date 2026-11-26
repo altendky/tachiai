@@ -34,6 +34,35 @@ internal object WireGuardRouteProtocol : RouteProtocol {
             NativeRouteEngine(Routebridge.newWireGuardEngine(profile.configuration))
         }
 
+    // Renewal-job leases (#275 stage 5) come from the same owner. The job's
+    // Network is used only if that owner must start a job-bound device.
+    @Volatile internal var jobLeases: (ConnectionProfile, RouteProxySecurity, RoutePreparation, RouteJobNetwork) -> RouteBackend =
+        { profile, security, _, job -> leaseLocallyForJob(profile, security, job) }
+
+    internal fun leaseLocallyForJob(profile: ConnectionProfile, security: RouteProxySecurity, job: RouteJobNetwork): RouteBackend =
+        RouteEngineOwner.shared.leaseForJob(routeConfigurationKey(profile), checkNotNull(routeConflictKey(profile)), security) {
+            val egress = job.egress()
+            try { NativeRouteEngine(Routebridge.newWireGuardBoundEngine(profile.configuration, egress)) }
+            catch (error: Throwable) {
+                // The native start cancelled this scope; anything it could not
+                // confirm keeps the identity blocked.
+                if (!runCatching { egress.cancel(); egress.isCleanupConfirmed() }.getOrDefault(false)) {
+                    runCatching(egress::reportCleanupUnconfirmed)
+                    retainedJobScopes.add(egress)
+                    throw RouteEngineOwner.CleanupUnconfirmed()
+                }
+                throw error
+            }
+        }
+    private val retainedJobScopes = java.util.concurrent.ConcurrentLinkedQueue<RouteNetworkEgress>()
+
+    // The bound path: a renewal job's lease, never a device of its own.
+    internal fun createJobBackend(profile: ConnectionProfile, security: RouteProxySecurity, preparation: RoutePreparation,
+        job: RouteJobNetwork): RouteBackend {
+        preparation.checkActive()
+        return jobLeases(profile, security, preparation, job)
+    }
+
     override fun createBackend(profile: ConnectionProfile, security: RouteProxySecurity, preparation: RoutePreparation): RouteBackend {
         preparation.checkActive()
         return leases(profile, security, preparation)

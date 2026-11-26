@@ -55,7 +55,10 @@ on-device Translation (`com.google.mlkit:translate` 17.0.3) and bundled
 Language Identification (`com.google.mlkit:language-id` 17.0.6). Both are the
 bundled variants, so they do not need Google Play services at runtime; their
 Play services client libraries are linked. ML Kit's startup provider is removed,
-so it initializes on the first translation after the user turns it on. Models
+so it initializes on the first translation after the user turns it on. The
+datatransport Firelog backend registration is removed too, so ML Kit's
+`FIREBASE_ML_SDK` diagnostics are refused before storage
+([#751](https://github.com/altendky/tachiai/issues/751)). Models
 download from `dl.google.com` through Android's DownloadManager. That download
 uses the system network, not a provider's route, because it is not provider
 traffic. Phone and TV share the same code and settings. The same rules are

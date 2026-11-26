@@ -6,6 +6,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
+import android.net.Network
 import android.os.*
 import android.os.Process
 import java.util.concurrent.ConcurrentLinkedQueue
@@ -14,6 +15,8 @@ import java.util.concurrent.Executors
 private fun bundle(fields: Map<String, Any>) = Bundle().apply {
     for ((key, value) in fields) when (value) {
         is String -> putString(key, value); is Long -> putLong(key, value); is Boolean -> putBoolean(key, value)
+        // Only a renewal job's OPEN carries its Network (#275 stage 5).
+        is Network -> putParcelable(key, value)
         else -> error("Unsupported private field")
     }
 }
@@ -59,7 +62,8 @@ class RouteLeaseService : Service() {
         if (sessions.containsKey(request.nonce)) return
         lateinit var session: Session
         val grant = RouteLeaseGrant(request,
-            grant = { open -> grantRouteLease(open, connectionProfileStore(this)::configured, WireGuardRouteProtocol::leaseLocally) },
+            grant = { open -> grantRouteLease(open, connectionProfileStore(this)::configured,
+                WireGuardRouteProtocol::leaseLocallyForJob, WireGuardRouteProtocol::leaseLocally) },
             send = { what, values ->
                 val data = bundle(values)
                 try { reply.send(Message.obtain().apply { this.what = what; this.data = data }) } finally { data.clear() }
@@ -150,5 +154,9 @@ internal fun installRouteLeaseSource(context: Context) {
     val application = context.applicationContext
     WireGuardRouteProtocol.leases = { profile, security, preparation ->
         RemoteRouteLeaseBackend.open(AndroidRouteLeaseChannel(application), profile, security, preparation, SystemClock::elapsedRealtime)
+    }
+    WireGuardRouteProtocol.jobLeases = { profile, security, preparation, job ->
+        RemoteRouteLeaseBackend.open(AndroidRouteLeaseChannel(application), profile, security, preparation,
+            SystemClock::elapsedRealtime, job = job)
     }
 }

@@ -85,10 +85,12 @@ internal object AndroidAbemaRenewalJobs {
     fun networkChanged(params: JobParameters) { synchronized(this) { runtime }?.networkChanged(params) }
     fun destroyed(service: AbemaRenewalJobService) { synchronized(this) { runtime }?.destroyed(service) }
     // Debug builds only (#689): the debug renew-now component's entry. It waits
-    // on the account worker, so it must not be called from that worker.
-    fun renewNow(context: Context, instance: String?): AbemaRenewalTrigger {
+    // on the account worker, so it must not be called from that worker. With
+    // jobNetwork, the attempt captures the active Network as the job does, so
+    // its routes take the job's path (#275 stage 5).
+    fun renewNow(context: Context, instance: String?, jobNetwork: Boolean = false): AbemaRenewalTrigger {
         if (!BuildConfig.DEBUG || !supported(context) || AbemaAccountWorkers.onWorker()) return AbemaRenewalTrigger.UNAVAILABLE
-        return owner(context).also { it.initialize() }.renewNow(instance)
+        return owner(context).also { it.initialize() }.renewNow(instance, jobNetwork)
     }
 
     private class Running(val service: AbemaRenewalJobService, val params: JobParameters,
@@ -150,10 +152,13 @@ internal object AndroidAbemaRenewalJobs {
         private fun renewEarly(instance: String, generation: AbemaRenewalGeneration, done: (Boolean) -> Unit) {
             val began = SystemClock.elapsedRealtime()
             if (began < 0 || began > Long.MAX_VALUE - AbemaReadinessIpc.LIMIT_MS) { done(false); return }
+            // Debug job-Network trigger only: this one attempt, within its window.
+            val network = triggerNetwork.getAndSet(null)?.takeIf { it.first == instance && began < it.third }?.second
+            if (network != null) log("TRIGGER_JOB_NETWORK")
             AbemaRenewalTimerRun(instance, generation, began + AbemaReadinessIpc.LIMIT_MS, worker,
                 SystemClock::elapsedRealtime, ::inspect,
                 { target, deadline, admitted -> AndroidAbemaRenewalReadiness.reserve(context, target, deadline,
-                    admitted = admitted, leadMs = ABEMA_RENEWAL_LEAD_MS) },
+                    network = network, admitted = admitted, leadMs = ABEMA_RENEWAL_LEAD_MS) },
                 { !disabled.get() && timer.current(instance, generation) &&
                     !AndroidAbemaEmailGrantHandoff.inbox.manualPending() },
                 { wait, action -> main.postDelayed(action, wait) }, done, log).start()
@@ -162,8 +167,10 @@ internal object AndroidAbemaRenewalJobs {
 
         // Debug builds only (#689): the timer's own attempt for a saved grant,
         // now. Queued behind any pending reconciliation on the account worker.
-        fun renewNow(instance: String?): AbemaRenewalTrigger {
-            val task = FutureTask { renewNowOnWorker(instance) }
+        // Debug job-Network trigger: instance, the captured Network and when it lapses.
+        private val triggerNetwork = java.util.concurrent.atomic.AtomicReference<Triple<String, Network, Long>?>()
+        fun renewNow(instance: String?, jobNetwork: Boolean): AbemaRenewalTrigger {
+            val task = FutureTask { renewNowOnWorker(instance, jobNetwork) }
             try { worker.execute(task) } catch (_: Throwable) { return AbemaRenewalTrigger.UNAVAILABLE }
             return try { task.get(10, TimeUnit.SECONDS) } catch (_: Throwable) {
                 // Not started yet: it never will. Started: report what it did.
@@ -171,7 +178,7 @@ internal object AndroidAbemaRenewalJobs {
                 else runCatching { task.get(30, TimeUnit.SECONDS) }.getOrDefault(AbemaRenewalTrigger.UNAVAILABLE)
             }
         }
-        private fun renewNowOnWorker(instance: String?): AbemaRenewalTrigger {
+        private fun renewNowOnWorker(instance: String?, jobNetwork: Boolean): AbemaRenewalTrigger {
             val result = try {
                 if (disabled.get() || !unlocked()) AbemaRenewalTrigger.UNAVAILABLE else {
                     val instances = providerInstanceStore(context).read { legacyProviderSettings(context) }
@@ -190,13 +197,20 @@ internal object AndroidAbemaRenewalJobs {
                         running.snapshot().isNotEmpty() || AndroidAbemaRenewalReadiness.busy() -> AbemaRenewalTrigger.RUNNING
                         else -> {
                             // The timer run's deadline, then the operation's own lifetime.
-                            AbemaRenewalForcedAdmission.open(checkNotNull(plans[selected]),
-                                AbemaReadinessIpc.LIMIT_MS + AbemaRenewalBrowserProtocol.LIMIT_MS)
-                            timer.trigger(selected).also { if (it != AbemaRenewalTrigger.STARTED) AbemaRenewalForcedAdmission.close() }
+                            val window = AbemaReadinessIpc.LIMIT_MS + AbemaRenewalBrowserProtocol.LIMIT_MS
+                            val network = if (!jobNetwork) null else context.getSystemService(
+                                android.net.ConnectivityManager::class.java).activeNetwork
+                            if (jobNetwork && network == null) AbemaRenewalTrigger.UNAVAILABLE else {
+                                AbemaRenewalForcedAdmission.open(checkNotNull(plans[selected]), window)
+                                triggerNetwork.set(network?.let { Triple(selected, it, SystemClock.elapsedRealtime() + window) })
+                                timer.trigger(selected).also {
+                                    if (it != AbemaRenewalTrigger.STARTED) { AbemaRenewalForcedAdmission.close(); triggerNetwork.set(null) }
+                                }
+                            }
                         }
                     }
                 }
-            } catch (_: Throwable) { AbemaRenewalForcedAdmission.close(); AbemaRenewalTrigger.UNAVAILABLE }
+            } catch (_: Throwable) { AbemaRenewalForcedAdmission.close(); triggerNetwork.set(null); AbemaRenewalTrigger.UNAVAILABLE }
             log("TRIGGER_RESULT result=${result.name}")
             return result
         }

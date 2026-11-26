@@ -108,7 +108,10 @@ loopback listeners from the ordinary process's single device per key pair over
 a same-UID Binder service, which the bound viewer keeps alive
 ([source routing](source-network-routing.md#subsequent-native-transport-implementation)). This is
 an internal mechanism with no user-visible flow; a lost owner fails the route
-into existing recovery.
+into existing recovery. The renewal job's WireGuard routes use the same owner:
+they join a held device, or else start one bound to the job's `Network` that an
+ordinary lease retires rather than adopts (#275 stage 5). This is internal as
+well.
 
 Replay skip and scrub (#655 part 1) are Android-only so far: a pair skip holds
 both Media3 players, seeks both by one amount checked with the shared Rust

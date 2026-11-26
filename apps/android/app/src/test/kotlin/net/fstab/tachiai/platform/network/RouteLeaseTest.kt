@@ -1,7 +1,10 @@
 package net.fstab.tachiai.platform.network
 
+import android.net.Network
 import java.io.IOException
+import java.net.InetAddress
 import java.util.Collections
+import javax.net.SocketFactory
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import org.junit.Assert.*
@@ -264,6 +267,101 @@ class RouteLeaseTest {
             RouteSession.create(wireGuard).close()
             assertEquals(RoutePurpose.PLAYBACK, seen!!.purpose)
         } finally { WireGuardRouteProtocol.leases = previous }
+    }
+
+    // #275 stage 5: a renewal job's lease carries its Network and deadline.
+    // JVM mockable SDK identity only; this does not exercise a real Parcelable.
+    private fun network(): Network = Network::class.java.getDeclaredConstructor().apply { isAccessible = true }.newInstance()
+    private val job = RouteJobNetwork(network(), 60_000)
+    private val jobRequest = RouteLeaseIpc.Open("1".repeat(32), routeConfigurationKey(wireGuard), RoutePurpose.ABEMA_APPROVAL_BROWSER,
+        credentials.first, credentials.second, credentials.third, 5000, job)
+
+    @Test fun jobOpenAddsOnlyTheTypedNetworkAndABoundedDeadline() {
+        val fields = RouteLeaseIpc.openFields(jobRequest)
+        assertEquals(open.keys + setOf("network", "until"), fields.keys)
+        // The SDK stub's equals is not identity, so the Network is compared by reference.
+        assertEquals(fields - "network", RouteLeaseIpc.fields(fields)!! - "network")
+        assertSame(job.network, RouteLeaseIpc.fields(fields)!!["network"])
+        val parsed = RouteLeaseIpc.open(checkNotNull(RouteLeaseIpc.fields(fields)), 1000)!!
+        assertSame(job.network, parsed.job!!.network); assertEquals(60_000, parsed.job!!.deadlineElapsedMs)
+        assertNull(RouteLeaseIpc.open(open, 1000)!!.job)
+        assertFalse(parsed.toString().contains(credentials.second))
+        for (bad in listOf(fields - "network", fields - "until", fields + ("until" to 1000L), fields + ("until" to 91_001L),
+            fields + ("until" to 60_000), fields + ("network" to "network"), open + ("network" to job.network)))
+            assertNull(RouteLeaseIpc.fields(bad)?.let { RouteLeaseIpc.open(it, 1000) })
+        // A Network is admitted under its own key only.
+        assertNull(RouteLeaseIpc.fields(open + ("realm" to job.network)))
+    }
+
+    @Test fun ownerGrantsAJobOpenOnlyThroughItsJobPath() {
+        var leased: RouteJobNetwork? = null; var security: RouteProxySecurity? = null
+        val backend = grantRouteLease(jobRequest, { wireGuard }, { _, granted, network -> leased = network; security = granted; FakeBackend() }) { _, _ ->
+            error("A job OPEN must not take the ordinary path") }
+        assertEquals(40_001, backend.proxyPort); assertSame(job.network, leased!!.network)
+        assertEquals(RoutePurpose.ABEMA_APPROVAL_BROWSER.allowedHosts, security!!.allowedHosts)
+        grantRouteLease(request, { wireGuard }, { _, _, _ -> error("An ordinary OPEN must not take the job path") }) { _, _ -> FakeBackend() }
+        assertThrows(IOException::class.java) { grantRouteLease(jobRequest, { wireGuard }) { _, _ -> FakeBackend() } }
+    }
+
+    @Test fun clientJobLeaseSendsItsNetworkAndCancellationStopsTheOpen() {
+        var sentNetwork: Any? = null
+        val channel = object : RouteLeaseChannel {
+            lateinit var events: RouteLeaseChannel.Events
+            val sent = Collections.synchronizedList(mutableListOf<Int>())
+            var nonce = ""
+            override fun connect(events: RouteLeaseChannel.Events): Boolean { this.events = events; events.connected(); return true }
+            override fun send(what: Int, fields: Map<String, Any>) {
+                sent.add(what)
+                if (what == RouteLeaseIpc.OPEN) { nonce = fields["nonce"] as String; sentNetwork = fields["network"] }
+                if (what == RouteLeaseIpc.CLOSE)
+                    events.received(RouteLeaseIpc.CLOSED, mapOf("nonce" to nonce, "sequence" to 1L, "confirmed" to true))
+            }
+            override fun release() = Unit
+        }
+        val preparation = RoutePreparation()
+        val canceller = Thread { Thread.sleep(50); preparation.cancel() }.apply { start() }
+        assertThrows(IOException::class.java) {
+            RemoteRouteLeaseBackend.open(channel, wireGuard, security(RoutePurpose.ABEMA_APPROVAL_BROWSER), preparation, { 1000 }, 5000, job)
+        }
+        canceller.join()
+        assertSame(job.network, sentNetwork)
+        assertEquals(listOf(RouteLeaseIpc.OPEN, RouteLeaseIpc.CLOSE), channel.sent)
+        assertTrue(preparation.cleanupConfirmed)
+    }
+
+    private class JobEgress(override val routeJob: RouteJobNetwork?) : RouteNetworkEgress {
+        var cancels = 0
+        override val socketFactory get() = SocketFactory.getDefault()
+        override fun checkActive() = Unit
+        override fun isActive() = true
+        override fun resolveAddresses(host: String, timeoutMillis: Long): List<InetAddress> = error("No fixture DNS")
+        override fun resolve(host: String?, timeoutMillis: Long): String = error("No fixture DNS")
+        override fun bindSocket(fd: Int) = error("No fixture binding")
+        override fun cancel() { cancels++ }
+        override fun isCleanupConfirmed() = true
+        override fun reportCleanupUnconfirmed() = Unit
+        override fun closeOwnedSockets() = Unit
+    }
+
+    @Test fun boundWireGuardRoutesLeaseFromTheOwnerWithTheJobNetwork() {
+        val previous = WireGuardRouteProtocol.jobLeases
+        var seen: RouteJobNetwork? = null
+        try {
+            WireGuardRouteProtocol.jobLeases = { _, _, _, network -> seen = network; FakeBackend() }
+            val egress = JobEgress(job)
+            val backend = NativeRouteBackend.createBound(wireGuard, security(RoutePurpose.ABEMA_ACCOUNT_SESSION), RoutePreparation(), egress)
+            assertEquals(40_001, backend.proxyPort); assertSame(job, seen); assertEquals(0, egress.cancels)
+            // Without a job capability, or once cancelled, nothing is leased and nothing falls back.
+            seen = null
+            assertThrows(IOException::class.java) {
+                NativeRouteBackend.createBound(wireGuard, security(RoutePurpose.ABEMA_ACCOUNT_SESSION), RoutePreparation(), JobEgress(null))
+            }
+            val cancelled = RoutePreparation().apply { cancel() }
+            assertThrows(Exception::class.java) {
+                NativeRouteBackend.createBound(wireGuard, security(RoutePurpose.ABEMA_ACCOUNT_SESSION), cancelled, JobEgress(job))
+            }
+            assertNull(seen)
+        } finally { WireGuardRouteProtocol.jobLeases = previous }
     }
 
     private fun RouteLeaseIpc.Open.copy(purpose: RoutePurpose) = RouteLeaseIpc.Open(nonce, digest, purpose, username, password, realm, deadline)

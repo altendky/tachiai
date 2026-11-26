@@ -33,7 +33,15 @@ never crosses Binder: the request names the saved profile only by its route
 configuration digest, and the owner re-reads that profile from its own store.
 Allowed hosts are derived by the owner from a closed purpose name, never sent by
 the client. Only the lease's random loopback proxy credentials cross, once, in
-a strictly validated RAM-only message.
+a strictly validated RAM-only message. A renewal job's request from the approval
+process (#275 stage 5) also carries the job's Android `Network` and its
+deadline, at most 90 seconds ahead. The owner uses them only to start a device
+bound to that `Network` when none is held for the key; otherwise the job joins
+the held device, whose outer traffic uses the default network. Destination
+traffic still goes only through the tunnel. An ordinary lease retires a
+job-bound device rather than adopting it. Owner death or unconfirmed cleanup
+fails the route with no System or direct fallback, and TLS and entitlement
+checks are unchanged.
 
 ## Android renewal scheduling metadata
 

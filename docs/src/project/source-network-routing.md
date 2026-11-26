@@ -43,12 +43,41 @@ Neither falls back to a local device or System. The ABEMA guest and approval
 WebView processes lease the same way (#275 stage 4); their WebView proxy
 override points at the lease's loopback listener. The approval browser waits
 up to the lease IPC deadline plus one second for its route close to be
-confirmed. Only the renewal job's Network-bound devices still start separately
-([#275](https://github.com/altendky/tachiai/issues/275) stage 5). Each process logs
-closed engine events under `TachiaiRouteEngine`: process role,
-`ENGINE_STARTED`/`ENGINE_RETIRED` with the engine count, `LEASE_OPENED` with
-the lease count, or `ENGINE_CLEANUP_UNCONFIRMED`. No configuration, key or host
-is logged.
+confirmed.
+
+The renewal job's routes go through the same owner
+([#275](https://github.com/altendky/tachiai/issues/275) stage 5), the user's
+2026-11-19 decision:
+
+- **An engine is held for the key:** the job joins it, both for the account
+  checks in the ordinary process and for the approval browser's lease. That
+  engine's outer WireGuard traffic then uses the default network rather than
+  the job's `Network`. Destination traffic still goes only through the tunnel.
+- **None is held:** the owner starts a job-bound engine whose outer endpoint
+  DNS and UDP use only the job's `Network`. The approval browser's lease
+  request carries that `Network` and the job's deadline, so the engine still
+  starts in the ordinary process. Other job leases join it. It retires as soon
+  as its last job lease closes, without the 30-second idle period, because its
+  `Network` belongs to the job.
+- **An ordinary lease arrives while a job-bound engine runs:** the owner
+  retires the job's engine first, which revokes the job's leases, and then
+  starts the ordinary engine. It does not adopt it: an adopted feed or
+  catalog would lose its route when the job's `Network` and deadline end. The
+  interrupted renewal fails into its existing handling (a job retry or
+  deferral, the pre-expiry timer, or the foreground readiness retry, which
+  then joins the new engine).
+- **Unchanged:** an unconfirmed close or failed start blocks the key for every
+  consumer until the owner process restarts. Nothing falls back to System or a
+  direct connection, and TLS and entitlement checks are unchanged.
+
+Each process logs closed engine events under `TachiaiRouteEngine`: process
+role, `ENGINE_STARTED`/`ENGINE_RETIRED` with the engine count, `LEASE_OPENED`
+with the lease count, or `ENGINE_CLEANUP_UNCONFIRMED`. Job leases add
+`JOB_LEASE_JOINED engine=SHARED|JOB`, `JOB_ENGINE_STARTED engines=…`,
+`JOB_ENGINE_RETIRED reason=RELEASED|LEASE_REQUESTED engines=…` and
+`JOB_LEASE_REFUSED reason=CONFLICT|CLEANUP_UNCONFIRMED`. No configuration, key,
+host or `Network` is logged. Only the ordinary process (`process=main`) starts
+engines; an engine event from another process would be a second device.
 
 Every connection a route's loopback bridge refuses is also logged, as a warning
 under the same tag
@@ -288,8 +317,8 @@ binding, and Android closes its own duplicate descriptor.
 
 Unconfirmed native, resolver, descriptor or socket cleanup is sticky and retains
 the actual owner. A bound WireGuard peer reservation spans construction, its
-published route and cleanup; replacement for the same key pair is allowed only
-after confirmed cleanup. Unknown cleanup quarantines that peer until process
+published route or engine (#275 stage 5) and cleanup; replacement for the same
+key pair is allowed only after confirmed cleanup. Unknown cleanup quarantines that peer until process
 exit. No key, peer digest, provider URL or platform exception is reported by
 these ownership guards.
 
@@ -320,7 +349,9 @@ for the existing account operation without replacing its Network or extending
 its deadline. The ordinary null-capability path remains unchanged.
 
 Only the private START message carries a typed Network Parcelable with an
-explicit bound-mode discriminator. Legacy START keeps its original four scalar
+explicit bound-mode discriminator. Since #275 stage 5, the approval process
+hands that Network back, with the job's deadline, in a WireGuard lease request
+to the ordinary process's route owner; it starts no device of its own. Legacy START keeps its original four scalar
 fields; partial, wrong-type, unknown or stale envelopes are refused. CANCEL and
 results retain the existing scalar instance/owner/nonce/deadline identity and
 cannot replace the captured capability. No Network handle enters saved account
@@ -397,7 +428,11 @@ protected storage, instance/route ownership, the decoded expiry and current gran
 generation. A record outside that lead, missing or invalid causes no provider attempt.
 The supplied JobParameters Network is captured once for the original at-most
 90-second operation; it does not fall back to the ambient network. System,
-WireGuard, HTTP CONNECT and SOCKS5 routes use the existing bound transports.
+HTTP CONNECT and SOCKS5 routes use the existing bound transports. Since #275
+stage 5, a WireGuard route joins an engine already held for its key, whose
+outer traffic uses the default network, or else starts one job-bound engine
+in the ordinary process; see the
+[route owner](#subsequent-native-transport-implementation).
 Bound OpenVPN/OpenConnect remains unsupported and defers before provider work.
 API 26/27 retains foreground renewal because the assigned job Network API is
 unavailable there.
@@ -518,6 +553,15 @@ the next operation result, or after the timer run's and operation's limits
 - An accepted trigger spends the window like the due attempt, so the due time
   does not fire again for that generation in this process. The renewal job is
   unchanged.
+- **Job `Network` (#275 stage 5):** the trigger runs the timer's attempt, so
+  its routes are the process's own, not the job's. Method `renew-job-network`
+  instead captures the device's active `Network` for that one attempt, as the
+  job captures its JobParameters `Network`, so the account checks and the
+  approval browser take the job's route path: join a held engine or start a
+  job-bound one. It skips only the job's scheduling ledger, and it logs
+  `TRIGGER_JOB_NETWORK` when the attempt starts. Without an active `Network` it
+  returns `UNAVAILABLE`. A retry after a result-less attempt uses the process's
+  own route.
 
 `mise run android-abema-renewal-check <serial> …` drives one forced renewal on
 an explicitly chosen device; see the
@@ -560,6 +604,7 @@ grant or exception text):
 | `TachiaiAbemaRenewal` | `RETRY attempt=… reason=…` (`TEMPORARY_FAILURE` or `CANCELLED`) | default (foreground readiness only, #635) |
 | `TachiaiAbemaRenewal` | `TIMER_SCHEDULED`, `TIMER_POSTPONED reason=MANUAL_APPROVAL`, `TIMER_FIRED` and `TIMER_RESULT result=…` | default (pre-expiry timer, #635) |
 | `TachiaiAbemaRenewal` | `TIMER_TRIGGERED` and `TRIGGER_RESULT result=…` | default (debug renew-now trigger, #689) |
+| `TachiaiAbemaRenewal` | `TRIGGER_JOB_NETWORK` | default (debug trigger with the job's `Network`, #275) |
 
 The diagnostic fields are `phase`, `reason`, `progress`, `region`, `account`,
 `transport`, `transportPhase`, `transportCancelled`, `startup` and `cleanup`.

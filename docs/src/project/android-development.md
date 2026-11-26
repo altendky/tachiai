@@ -407,15 +407,23 @@ emulator reporting another AVD name. The command:
    `am help` and `use_freezer=true`; otherwise `--freeze` refuses before
    triggering. Without it, if no result arrives within `--timeout` (120 s) the
    command thaws any process the system froze, to collect the late result.
-5. Keeps only `TachiaiAbemaRenewal` and `TachiaiAbemaApproval` lines and
-   ActivityManager freezer lines naming Tachiai's processes. No URL, identity
-   or token is read or printed. `--log-file` also writes them to a file.
+5. Keeps only `TachiaiAbemaRenewal` and `TachiaiAbemaApproval` lines, the
+   closed `TachiaiRouteEngine` lifecycle events (not its host-bearing
+   `ROUTE_REFUSED`/`ROUTE_CHALLENGED` lines) and ActivityManager freezer lines
+   naming Tachiai's processes. No URL, host, identity or token is read or
+   printed. `--log-file` also writes them to a file.
 6. Prints `PASS` only for `OPERATION_RESULT result=SUCCESS
    cleanupConfirmed=true` with neither process frozen while it still had a part
    (the default process until that result, the browser until its
    `BROWSER_RESULT`). It also reports the duration from the trigger to the
-   result. Exit status is 0 for a pass, 1 for a fail and 2 for a refusal or
+   result, and the route engines started after the trigger: which ones, the
+   job's joins, the most held at once and any started outside the default
+   process (#275). Exit status is 0 for a pass, 1 for a fail and 2 for a refusal or
    setup error.
+
+`--job-network` fires method `renew-job-network` instead, which captures the
+active `Network` for the attempt as the renewal job does, so its WireGuard
+routes take the job's path through the route owner (#275 stage 5).
 
 The trigger exists only in debug builds. It is absent from release, and the
 local inspection build disables it.

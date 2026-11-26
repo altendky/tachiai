@@ -1,7 +1,10 @@
 package net.fstab.tachiai.platform.network
 
+import android.net.Network
 import java.io.IOException
+import java.net.InetAddress
 import java.util.Collections
+import javax.net.SocketFactory
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import org.junit.Assert.*
@@ -76,8 +79,9 @@ class RouteLeaseTest {
     private class Sent(val what: Int, val fields: Map<String, Any>)
     private fun grant(lease: (RouteLeaseIpc.Open) -> RouteBackend, now: Long = 1000, closeMs: Long = 2000,
         execute: (Runnable) -> Unit = { it.run() }, sent: MutableList<Sent> = mutableListOf(),
-        closed: MutableList<Boolean> = mutableListOf()) =
-        RouteLeaseGrant(request, lease, { what, fields -> sent.add(Sent(what, fields)) }, execute, { now }, closeMs) { closed.add(it) }
+        closed: MutableList<Boolean> = mutableListOf(), logged: MutableList<String> = mutableListOf()) =
+        RouteLeaseGrant(request, lease, { what, fields -> sent.add(Sent(what, fields)) }, execute, { now }, closeMs,
+            { closed.add(it) }) { logged.add(it) }
 
     @Test fun ownerSendsReadyThenOneConfirmedCloseWithIncreasingSequence() {
         val sent = mutableListOf<Sent>(); val closed = mutableListOf<Boolean>()
@@ -115,12 +119,14 @@ class RouteLeaseTest {
     }
 
     @Test fun ownerReportsFailedOrStalledCloseAsUnconfirmed() {
-        val failed = mutableListOf<Sent>(); val failedClosed = mutableListOf<Boolean>()
-        grant({ FakeBackend(failClose = true) }, sent = failed, closed = failedClosed).apply { start(); end() }
+        val failed = mutableListOf<Sent>(); val failedClosed = mutableListOf<Boolean>(); val logged = mutableListOf<String>()
+        grant({ FakeBackend(failClose = true) }, sent = failed, closed = failedClosed, logged = logged).apply { start(); end() }
         assertEquals(false, failed.last().fields["confirmed"]); assertEquals(listOf(false), failedClosed)
+        assertEquals(listOf("LEASE_CLOSE_UNCONFIRMED reason=FAILED"), logged)
+        val stalledLog: MutableList<String> = Collections.synchronizedList(mutableListOf())
         val gate = CountDownLatch(1)
         val stalled: MutableList<Sent> = Collections.synchronizedList(mutableListOf())
-        grant({ FakeBackend(closeGate = gate) }, closeMs = 50, sent = stalled,
+        grant({ FakeBackend(closeGate = gate) }, closeMs = 50, sent = stalled, logged = stalledLog,
             execute = { task -> Thread(task).apply { isDaemon = true }.start() }).apply {
             start()
             val began = System.nanoTime()
@@ -131,9 +137,11 @@ class RouteLeaseTest {
         while (stalled.size < 2 && System.nanoTime() - began < 5_000_000_000) Thread.sleep(5)
         gate.countDown()
         assertEquals(false, stalled.last().fields["confirmed"])
-        val rejected = mutableListOf<Sent>()
-        grant({ FakeBackend() }, sent = rejected, execute = { throw IllegalStateException("Rejected") }).start()
+        assertEquals(listOf("LEASE_CLOSE_UNCONFIRMED reason=TIMEOUT"), stalledLog.toList())
+        val rejected = mutableListOf<Sent>(); val rejectedLog = mutableListOf<String>()
+        grant({ FakeBackend() }, sent = rejected, logged = rejectedLog, execute = { throw IllegalStateException("Rejected") }).start()
         assertEquals(false, rejected.single().fields["confirmed"])
+        assertEquals(listOf("LEASE_CLOSE_UNCONFIRMED reason=REJECTED"), rejectedLog)
     }
 
     // Loopback channel: the owner's RouteLeaseGrant answers on the caller's thread.
@@ -170,8 +178,9 @@ class RouteLeaseTest {
     private fun security(purpose: RoutePurpose? = RoutePurpose.PLAYBACK) = RouteProxySecurity(credentials.first,
         credentials.second, credentials.third, purpose?.allowedHosts ?: "example.test", purpose)
     private fun lease(channel: RouteLeaseChannel, preparation: RoutePreparation = RoutePreparation(), waitMs: Long = 5000,
-        profile: ConnectionProfile = wireGuard, purpose: RoutePurpose? = RoutePurpose.PLAYBACK) =
-        RemoteRouteLeaseBackend.open(channel, profile, security(purpose), preparation, { 1000 }, waitMs)
+        profile: ConnectionProfile = wireGuard, purpose: RoutePurpose? = RoutePurpose.PLAYBACK,
+        logged: MutableList<String> = mutableListOf()) =
+        RemoteRouteLeaseBackend.open(channel, profile, security(purpose), preparation, { 1000 }, waitMs, log = { logged.add(it) })
 
     @Test fun clientLeasesFromTheOwnerAndConfirmsClose() {
         val channel = Loopback()
@@ -203,17 +212,21 @@ class RouteLeaseTest {
     @Test fun silentOwnerTimesOutAndPoisonsThePreparation() {
         val channel = Loopback(answers = false)
         val preparation = RoutePreparation()
-        assertThrows(IOException::class.java) { lease(channel, preparation, waitMs = 50) }
+        val logged = mutableListOf<String>()
+        assertThrows(IOException::class.java) { lease(channel, preparation, waitMs = 50, logged = logged) }
+        assertEquals(listOf("LEASE_CLOSE_UNCONFIRMED reason=NO_REPLY"), logged)
         assertEquals(listOf(RouteLeaseIpc.OPEN, RouteLeaseIpc.CLOSE), channel.sent)
         assertFalse(preparation.cleanupConfirmed)
     }
 
     @Test fun unconfirmedOwnerCloseThrowsEveryTime() {
         val channel = Loopback(backend = FakeBackend(failClose = true))
-        val backend = lease(channel)
+        val logged = mutableListOf<String>()
+        val backend = lease(channel, logged = logged)
         assertThrows(IOException::class.java) { backend.close() }
         assertThrows(IOException::class.java) { backend.close() }
         assertEquals(1, channel.backend.closes)
+        assertEquals(listOf("LEASE_CLOSE_UNCONFIRMED reason=OWNER_UNCONFIRMED"), logged)
     }
 
     @Test fun ownerDeathRevokesWithoutAReleaseToSend() {
@@ -264,6 +277,158 @@ class RouteLeaseTest {
             RouteSession.create(wireGuard).close()
             assertEquals(RoutePurpose.PLAYBACK, seen!!.purpose)
         } finally { WireGuardRouteProtocol.leases = previous }
+    }
+
+    // #275 stage 5: a renewal job's lease carries its Network and deadline.
+    // JVM mockable SDK identity only; this does not exercise a real Parcelable.
+    private fun network(): Network = Network::class.java.getDeclaredConstructor().apply { isAccessible = true }.newInstance()
+    private val job = RouteJobNetwork(network(), 60_000)
+    private val jobRequest = RouteLeaseIpc.Open("1".repeat(32), routeConfigurationKey(wireGuard), RoutePurpose.ABEMA_APPROVAL_BROWSER,
+        credentials.first, credentials.second, credentials.third, 5000, job)
+
+    @Test fun jobOpenAddsOnlyTheTypedNetworkAndABoundedDeadline() {
+        val fields = RouteLeaseIpc.openFields(jobRequest)
+        assertEquals(open.keys + setOf("network", "until"), fields.keys)
+        // The SDK stub's equals is not identity, so the Network is compared by reference.
+        assertEquals(fields - "network", RouteLeaseIpc.fields(fields)!! - "network")
+        assertSame(job.network, RouteLeaseIpc.fields(fields)!!["network"])
+        val parsed = RouteLeaseIpc.open(checkNotNull(RouteLeaseIpc.fields(fields)), 1000)!!
+        assertSame(job.network, parsed.job!!.network); assertEquals(60_000, parsed.job!!.deadlineElapsedMs)
+        assertNull(RouteLeaseIpc.open(open, 1000)!!.job)
+        assertFalse(parsed.toString().contains(credentials.second))
+        for (bad in listOf(fields - "network", fields - "until", fields + ("until" to 1000L), fields + ("until" to 91_001L),
+            fields + ("until" to 60_000), fields + ("network" to "network"), open + ("network" to job.network)))
+            assertNull(RouteLeaseIpc.fields(bad)?.let { RouteLeaseIpc.open(it, 1000) })
+        // A Network is admitted under its own key only.
+        assertNull(RouteLeaseIpc.fields(open + ("realm" to job.network)))
+    }
+
+    @Test fun ownerGrantsAJobOpenOnlyThroughItsJobPath() {
+        var leased: RouteJobNetwork? = null; var security: RouteProxySecurity? = null
+        val backend = grantRouteLease(jobRequest, { wireGuard }, { _, granted, network -> leased = network; security = granted; FakeBackend() }) { _, _ ->
+            error("A job OPEN must not take the ordinary path") }
+        assertEquals(40_001, backend.proxyPort); assertSame(job.network, leased!!.network)
+        assertEquals(RoutePurpose.ABEMA_APPROVAL_BROWSER.allowedHosts, security!!.allowedHosts)
+        grantRouteLease(request, { wireGuard }, { _, _, _ -> error("An ordinary OPEN must not take the job path") }) { _, _ -> FakeBackend() }
+        assertThrows(IOException::class.java) { grantRouteLease(jobRequest, { wireGuard }) { _, _ -> FakeBackend() } }
+    }
+
+    @Test fun clientJobLeaseSendsItsNetworkAndCancellationStopsTheOpen() {
+        var sentNetwork: Any? = null
+        val channel = object : RouteLeaseChannel {
+            lateinit var events: RouteLeaseChannel.Events
+            val sent = Collections.synchronizedList(mutableListOf<Int>())
+            var nonce = ""
+            override fun connect(events: RouteLeaseChannel.Events): Boolean { this.events = events; events.connected(); return true }
+            override fun send(what: Int, fields: Map<String, Any>) {
+                sent.add(what)
+                if (what == RouteLeaseIpc.OPEN) { nonce = fields["nonce"] as String; sentNetwork = fields["network"] }
+                if (what == RouteLeaseIpc.CLOSE)
+                    events.received(RouteLeaseIpc.CLOSED, mapOf("nonce" to nonce, "sequence" to 1L, "confirmed" to true))
+            }
+            override fun release() = Unit
+        }
+        val preparation = RoutePreparation()
+        val canceller = Thread { Thread.sleep(50); preparation.cancel() }.apply { start() }
+        assertThrows(IOException::class.java) {
+            RemoteRouteLeaseBackend.open(channel, wireGuard, security(RoutePurpose.ABEMA_APPROVAL_BROWSER), preparation, { 1000 }, 5000, job)
+        }
+        canceller.join()
+        assertSame(job.network, sentNetwork)
+        assertEquals(listOf(RouteLeaseIpc.OPEN, RouteLeaseIpc.CLOSE), channel.sent)
+        assertTrue(preparation.cleanupConfirmed)
+    }
+
+    private class JobEgress(override val routeJob: RouteJobNetwork?) : RouteNetworkEgress {
+        var cancels = 0
+        override val socketFactory get() = SocketFactory.getDefault()
+        override fun checkActive() = Unit
+        override fun isActive() = true
+        override fun resolveAddresses(host: String, timeoutMillis: Long): List<InetAddress> = error("No fixture DNS")
+        override fun resolve(host: String?, timeoutMillis: Long): String = error("No fixture DNS")
+        override fun bindSocket(fd: Int) = error("No fixture binding")
+        override fun cancel() { cancels++ }
+        override fun isCleanupConfirmed() = true
+        override fun reportCleanupUnconfirmed() = Unit
+        override fun closeOwnedSockets() = Unit
+    }
+
+    @Test fun boundWireGuardRoutesLeaseFromTheOwnerWithTheJobNetwork() {
+        val previous = WireGuardRouteProtocol.jobLeases
+        var seen: RouteJobNetwork? = null
+        try {
+            WireGuardRouteProtocol.jobLeases = { _, _, _, network -> seen = network; FakeBackend() }
+            val egress = JobEgress(job)
+            val backend = NativeRouteBackend.createBound(wireGuard, security(RoutePurpose.ABEMA_ACCOUNT_SESSION), RoutePreparation(), egress)
+            assertEquals(40_001, backend.proxyPort); assertSame(job, seen); assertEquals(0, egress.cancels)
+            // Without a job capability, or once cancelled, nothing is leased and nothing falls back.
+            seen = null
+            assertThrows(IOException::class.java) {
+                NativeRouteBackend.createBound(wireGuard, security(RoutePurpose.ABEMA_ACCOUNT_SESSION), RoutePreparation(), JobEgress(null))
+            }
+            val cancelled = RoutePreparation().apply { cancel() }
+            assertThrows(Exception::class.java) {
+                NativeRouteBackend.createBound(wireGuard, security(RoutePurpose.ABEMA_ACCOUNT_SESSION), cancelled, JobEgress(job))
+            }
+            assertNull(seen)
+        } finally { WireGuardRouteProtocol.jobLeases = previous }
+    }
+
+    // A real egress scope, so cleanup verdicts are the production ones.
+    private class ScopeEgress(override val routeJob: RouteJobNetwork?) : RouteNetworkEgress {
+        val scope = NetworkEgressScope(System.nanoTime() + 60_000_000_000, System::nanoTime,
+            { error("No fixture DNS") }, { error("No fixture binding") })
+        override val socketFactory get() = scope.trackedSocketFactory(SocketFactory.getDefault())
+        override fun checkActive() = scope.checkActive()
+        override fun isActive() = scope.isActive()
+        override fun resolveAddresses(host: String, timeoutMillis: Long) = scope.resolveAddresses(host, timeoutMillis)
+        override fun resolve(host: String?, timeoutMillis: Long) = scope.resolve(checkNotNull(host), timeoutMillis)
+        override fun bindSocket(fd: Int) = scope.bindSocket(fd)
+        override fun cancel() = scope.cancel()
+        override fun isCleanupConfirmed() = scope.isCleanupConfirmed()
+        override fun reportCleanupUnconfirmed() = scope.reportCleanupUnconfirmed()
+        override fun closeOwnedSockets() = scope.closeOwnedSockets()
+    }
+
+    // The approval browser's job route when a viewer holds the shared engine
+    // (#275 stage 5, emulator scenario B): its job lease joins that engine, so
+    // its own Network scope is never used, and closing it the way the approval
+    // runtime does must confirm every step and leave the feed's engine up.
+    @Test fun approvalJobRouteOnAJoinedSharedEngineClosesConfirmed() {
+        val previous = WireGuardRouteProtocol.jobLeases
+        val events = mutableListOf<String>()
+        val owner = RouteEngineOwner(log = { events.add(it) }) { _, _ -> }
+        var engineCloses = 0; var leaseCloses = 0; var port = 40_000
+        val engine = object : RouteEngine {
+            override fun lease(security: RouteProxySecurity): RouteBackend = object : RouteBackend {
+                override val proxyPort = ++port
+                override fun close() { leaseCloses++ }
+            }
+            override fun close() { engineCloses++ }
+        }
+        val key = routeConfigurationKey(wireGuard); val conflict = checkNotNull(routeConflictKey(wireGuard))
+        try {
+            val feed = owner.lease(key, conflict, security()) { engine }
+            WireGuardRouteProtocol.jobLeases = { profile, granted, _, _ ->
+                owner.leaseForJob(routeConfigurationKey(profile), checkNotNull(routeConflictKey(profile)), granted) {
+                    error("A held engine is joined, never bound") }
+            }
+            val egress = ScopeEgress(job)
+            val network = net.fstab.tachiai.feature.connections.AbemaApprovalNetworkOwner()
+            val preparation = RoutePreparation()
+            val session = RouteSession.createBoundAbemaApprovalBrowser(wireGuard, network.create { egress }, preparation)
+            assertTrue(session.isAbemaApprovalBridge); assertEquals(40_002, session.proxyPort)
+            assertTrue(events.contains("JOB_LEASE_JOINED engine=SHARED"))
+            // The runtime's close order: network and preparation first, then the route.
+            network.cancel(); assertTrue(preparation.cancel())
+            session.close()
+            assertNull(session.cleanupFailure)
+            assertTrue(preparation.cleanupConfirmed); assertTrue(network.closeConfirmed())
+            assertTrue(egress.isCleanupConfirmed())
+            assertEquals(1, leaseCloses); assertEquals(0, engineCloses); assertEquals(1, owner.engineCount())
+            assertEquals("LEASE_CLOSED leases=1", events.last())
+            feed.close()
+        } finally { WireGuardRouteProtocol.jobLeases = previous }
     }
 
     private fun RouteLeaseIpc.Open.copy(purpose: RoutePurpose) = RouteLeaseIpc.Open(nonce, digest, purpose, username, password, realm, deadline)

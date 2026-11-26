@@ -48,6 +48,24 @@ class ParserTests(unittest.TestCase):
         self.assertIsNone(module.parse_line(line(1, "chromium", "https://example.invalid/?token=secret")))
         self.assertIsNone(module.parse_line("--------- beginning of main\n"))
 
+    def test_keeps_closed_route_engine_events_but_not_host_bearing_lines(self):
+        for message in ("process=main ENGINE_STARTED engines=1", "process=main JOB_LEASE_JOINED engine=SHARED",
+                        "process=main JOB_ENGINE_RETIRED reason=RELEASED engines=0",
+                        "process=main ENGINE_CLEANUP_UNCONFIRMED"):
+            self.assertIsNotNone(module.parse_line(line(1, "TachiaiRouteEngine", message)), message)
+        for message in ("ROUTE_REFUSED process=main purpose=PLAYBACK reason=NOT_ALLOWED host=example.invalid port=443 count=1",
+                        "ROUTE_CHALLENGED reason=AUTH_CHALLENGE", "process=main ENGINE_STARTED host=example.invalid"):
+            self.assertIsNone(module.parse_line(line(1, "TachiaiRouteEngine", message, "W")), message)
+
+    def test_engine_summary_counts_starts_joins_and_other_processes(self):
+        lines = [(99.0, "TachiaiRouteEngine", "process=main ENGINE_STARTED engines=1"),
+                 (101.0, "TachiaiRouteEngine", "process=main JOB_LEASE_JOINED engine=SHARED"),
+                 (102.0, "TachiaiRouteEngine", "process=main JOB_ENGINE_STARTED engines=1"),
+                 (103.0, "TachiaiRouteEngine", "process=abema_approval_browser ENGINE_STARTED engines=2")]
+        self.assertEqual(module.engine_summary(lines, 100.0), {
+            "started": ["JOB_ENGINE_STARTED", "ENGINE_STARTED"], "joined": ["SHARED"],
+            "outside": ["abema_approval_browser"], "most": 2})
+
     def test_trigger_reply_is_a_closed_constant(self):
         self.assertEqual(module.parse_trigger("Result: Bundle[{result=STARTED}]\n"), "STARTED")
         self.assertEqual(module.parse_trigger("Result: Bundle[{result=RUNNING}]\n"), "RUNNING")

@@ -15,9 +15,13 @@ trigger, optionally freeze Tachiai's default and approval-browser processes
 while Android ranks them cached (the cached-app freezer case, #682), collect
 renewal, approval and freezer log lines, and print a pass/fail summary.
 
-Only closed-constant log lines from Tachiai's renewal/approval tags and
-ActivityManager freezer lines naming Tachiai's processes are kept. No URL,
-identity or token is read or printed.
+With --job-network the attempt captures the active Network, as the renewal job
+does, so its WireGuard routes take the job's path through the route owner
+(#275 stage 5); the summary reports route-engine starts and joins.
+
+Only closed-constant log lines from Tachiai's renewal/approval tags, closed
+route-engine lifecycle events and ActivityManager freezer lines naming
+Tachiai's processes are kept. No URL, host, identity or token is read or printed.
 """
 
 import argparse
@@ -46,6 +50,10 @@ BROWSER = APPLICATION + ":abema_approval_browser"
 FREEZE_TARGETS = (APPLICATION, BROWSER)
 AUTHORITY = APPLICATION + ".debug.abema-renewal"
 TAGS = ("TachiaiAbemaRenewal", "TachiaiAbemaApproval")
+# Closed route-engine lifecycle events only (#275 stage 5). The same tag's
+# ROUTE_REFUSED and ROUTE_CHALLENGED lines name hosts and are not kept.
+ENGINE_TAG = "TachiaiRouteEngine"
+ENGINE_EVENT = re.compile(r"process=(\w+) ((?:JOB_)?(?:ENGINE|LEASE)_[A-Z_]+)((?: [a-z]+=[A-Z0-9_]+)*)")
 TRIGGER_RESULTS = {"STARTED", "NO_ACCOUNT", "AMBIGUOUS", "RUNNING", "WINDOW_SPENT", "MANUAL_APPROVAL",
                    "UNAVAILABLE", "INVALID_REQUEST"}
 # `logcat -v epoch`: seconds, pid, tid, priority, tag, message.
@@ -66,6 +74,8 @@ def parse_line(line):
         return None
     seconds, tag, message = float(match.group(1)), match.group(2), match.group(3)
     if tag in TAGS:
+        return seconds, tag, message
+    if tag == ENGINE_TAG and ENGINE_EVENT.fullmatch(message):
         return seconds, tag, message
     if tag == "ActivityManager" and FREEZER.search(message):
         return seconds, tag, message
@@ -148,6 +158,28 @@ def judge(lines, triggered_at, actions):
         "duration": None if finished is None else finished - triggered_at,
         "passed": result == "SUCCESS" and cleanup is True and not working,
     }
+
+
+def engine_summary(lines, triggered_at):
+    """Route-engine starts after the trigger (#275 stage 5): one device per key
+    means every start is in the default process and no count exceeds one per
+    saved key."""
+    started, joined, outside, most = [], [], [], 0
+    for seconds, tag, message in lines:
+        event = ENGINE_EVENT.fullmatch(message) if tag == ENGINE_TAG and seconds >= triggered_at else None
+        if event is None:
+            continue
+        process, name, fields = event.group(1), event.group(2), dict(
+            field.split("=", 1) for field in event.group(3).split())
+        if name in ("ENGINE_STARTED", "JOB_ENGINE_STARTED"):
+            started.append(name)
+            if process != "main":
+                outside.append(process)
+        if name == "JOB_LEASE_JOINED":
+            joined.append(fields.get("engine", "?"))
+        if name.endswith("_STARTED") and fields.get("engines", "").isdigit():
+            most = max(most, int(fields["engines"]))
+    return {"started": started, "joined": joined, "outside": outside, "most": most}
 
 
 def browser_done(lines, triggered_at):
@@ -294,7 +326,8 @@ def observe(args, device, reader, cutoff):
     actions = []
     time.sleep(1)
     triggered_at = device_seconds(device)
-    command = ["content", "call", "--uri", f"content://{AUTHORITY}", "--method", "renew"]
+    method = "renew-job-network" if args.job_network else "renew"
+    command = ["content", "call", "--uri", f"content://{AUTHORITY}", "--method", method]
     if args.instance:
         command += ["--arg", args.instance]
     trigger = parse_trigger(device.shell(*command, timeout=60, check=False))
@@ -353,6 +386,10 @@ def observe(args, device, reader, cutoff):
     if summary["frozeAfterItsPart"]:
         print(f"  froze after its part ended: {', '.join(summary['frozeAfterItsPart'])}")
     print(f"  duration: {duration}{late}")
+    engines = engine_summary(lines, triggered_at)
+    print(f"  route engines started: {', '.join(engines['started']) or 'none'}"
+          f"; job joined: {', '.join(engines['joined']) or 'none'}; most held: {engines['most']}"
+          f"; started outside the default process: {', '.join(engines['outside']) or 'none'}")
     if args.freeze:
         steps = "; ".join(f"{name} at +{at - triggered_at:.1f} s" for name, at in actions)
         print(f"  freeze step: {steps or 'no process was cached while it had a part'}")
@@ -376,6 +413,8 @@ def main():
     parser.add_argument("--timeout", type=float, default=120,
                         help="seconds to wait for a result before treating the renewal as stalled (default 120)")
     parser.add_argument("--instance", help="ABEMA provider instance, when more than one has a saved account")
+    parser.add_argument("--job-network", action="store_true",
+                        help="capture the active Network for the attempt, as the renewal job does (#275 stage 5)")
     parser.add_argument("--log-file", type=Path, help="also write the kept lines here")
     parser.add_argument("--adb", default=default_adb(), help="adb executable")
     return run(parser.parse_args())

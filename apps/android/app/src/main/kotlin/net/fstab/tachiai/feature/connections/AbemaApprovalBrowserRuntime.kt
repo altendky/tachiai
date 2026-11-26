@@ -135,6 +135,7 @@ internal class AbemaApprovalBrowserRuntime(
         private val workers = Executors.newSingleThreadExecutor { Thread(it, "abema-approval").apply { isDaemon = true } }
         private val cleanup = Executors.newSingleThreadExecutor { Thread(it, "abema-approval-close").apply { isDaemon = true } }
         private val retained = mutableListOf<Any>()
+        private fun cleanupUnconfirmed(check: String) { runCatching { Log.i(LOG_TAG, "CLEANUP_UNCONFIRMED check=$check") } }
     }
     private class Owned {
         val preparation = RoutePreparation()
@@ -144,14 +145,24 @@ internal class AbemaApprovalBrowserRuntime(
         @Volatile var route: RouteSession? = null
         @Volatile var routeClose: AbemaAccountCleanupReceipt<RouteSession>? = null
         @Volatile var regionCheck: AbemaApprovalRegionCheck? = null
-        fun closeConfirmed(): Boolean = try {
-            if (!prepared.await(1, TimeUnit.SECONDS)) network.refuseCleanup()
-            else if (regionCheck?.closeConfirmed() == false) network.refuseCleanup()
-            else {
-                val closed = routeClose?.await() ?: (backend?.await() ?: true)
-                if (!closed || !preparation.cleanupConfirmed) network.refuseCleanup() else network.closeConfirmed()
-            }
-        } catch (_: Throwable) { network.refuseCleanup() }
+        // The first failed check is logged as a closed constant (#275 stage 5);
+        // the renewal diagnostic keeps its earlier, decisive cause.
+        fun closeConfirmed(): Boolean {
+            val failed = try {
+                when {
+                    !prepared.await(1, TimeUnit.SECONDS) -> "PREPARED"
+                    regionCheck?.closeConfirmed() == false -> "REGION_CHECK detail=${regionCheck?.cleanupFailure ?: "UNKNOWN"}"
+                    !(routeClose?.await() ?: (backend?.await() ?: true)) -> if (routeClose == null) "BACKEND_CLOSE"
+                        else "ROUTE_CLOSE detail=${route?.cleanupFailure ?: "UNREPORTED"}"
+                    !preparation.cleanupConfirmed -> "PREPARATION"
+                    !network.closeConfirmed() -> "NETWORK_SCOPE"
+                    else -> null
+                }
+            } catch (_: Throwable) { "EXCEPTION" }
+            if (failed == null) return true
+            cleanupUnconfirmed(failed)
+            return network.refuseCleanup()
+        }
     }
     private val main = Handler(Looper.getMainLooper())
     private var view: WebView? = null
@@ -605,14 +616,15 @@ internal class AbemaApprovalBrowserRuntime(
             }
             view = null
         } catch (_: Throwable) { destroyed = false }
-        fun unconfirmed() {
+        fun unconfirmed(check: String) {
+            cleanupUnconfirmed(check)
             observed(AbemaApprovalObservation.CLEANUP_UNCONFIRMED)
             poisoned.set(true)
             synchronized(retained) { retained.addAll(listOfNotNull(handle, browser, reset)) }
             finishDirect()
         }
-        if (!destroyed) { unconfirmed(); return }
-        val clearDeadline = Runnable { if (!finishedAfterCleanup) unconfirmed() }
+        if (!destroyed) { unconfirmed("DESTROY"); return }
+        val clearDeadline = Runnable { if (!finishedAfterCleanup) unconfirmed("CLEAR_DEADLINE") }
         main.postDelayed(clearDeadline, APPROVAL_CLEAR_DEADLINE_MS)
         proxy.clear {
             cleanup.execute {
@@ -622,7 +634,11 @@ internal class AbemaApprovalBrowserRuntime(
                 main.post {
                     if (finishedAfterCleanup) return@post
                     main.removeCallbacks(clearDeadline)
-                    if (!confirmed || poisoned.get()) { unconfirmed(); return@post }
+                    if (!confirmed || poisoned.get()) {
+                        // A failed route check already logged its own check.
+                        unconfirmed(if (!resetConfirmed) "SESSION_RESET" else if (!routeConfirmed) "ROUTE" else "POISONED")
+                        return@post
+                    }
                     observed(AbemaApprovalObservation.CLEANUP_CONFIRMED)
                     occupied.set(false)
                     val returning = returnRequested && loaded && request.current(SystemClock.elapsedRealtime()) &&

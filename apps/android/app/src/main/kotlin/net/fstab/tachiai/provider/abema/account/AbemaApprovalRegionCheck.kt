@@ -170,11 +170,24 @@ internal class AbemaApprovalRegionCheck(
     fun closeConfirmed(): Boolean {
         cancel()
         val done = synchronized(lock) { completed }
+        val earlier = synchronized(lock) { poisoned }
         val finished = try { done?.await(cleanupWaitMs, TimeUnit.MILLISECONDS) != false }
         catch (_: InterruptedException) { Thread.currentThread().interrupt(); false }
         val pending = synchronized(lock) { active }
-        if (!finished || pending?.receipt?.await() == false) poison(pending)
-        return cleanupConfirmed
+        val disconnected = pending?.receipt?.await() != false
+        if (!finished || !disconnected) poison(pending)
+        val confirmed = cleanupConfirmed
+        // Closed constant only, for the approval runtime's cleanup log.
+        cleanupFailure = when {
+            confirmed -> null
+            earlier -> "POISONED"
+            !finished -> "REQUEST_RUNNING"
+            !disconnected -> "DISCONNECT"
+            else -> "BUSY"
+        }
+        return confirmed
     }
+    @Volatile var cleanupFailure: String? = null
+        private set
     override fun toString() = "AbemaApprovalRegionCheck(redacted)"
 }

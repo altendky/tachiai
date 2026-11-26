@@ -79,11 +79,106 @@ func newWireGuardBound(config, username, password, realm, allowedHosts string, b
 	if err != nil {
 		return nil, err
 	}
-	parsed, err := parseWireGuard(config)
-	if err != nil {
+	if _, err = parseHosts(allowedHosts); err != nil || !localCredentialPattern.MatchString(username) || !localCredentialPattern.MatchString(password) || !localCredentialPattern.MatchString(realm) {
 		return nil, n.failure(errConfig)
 	}
-	if _, err = parseHosts(allowedHosts); err != nil || !localCredentialPattern.MatchString(username) || !localCredentialPattern.MatchString(password) || !localCredentialPattern.MatchString(realm) {
+	peer, err := startBoundWireGuard(config, n, makeBind)
+	if err != nil {
+		return nil, err
+	}
+	route, err := newRouteWithCleanup(username, password, realm, allowedHosts, peer.dial, n.cleanup(peer.close))
+	if err != nil {
+		return nil, peer.rollback(err)
+	}
+	n.finish(route)
+	afterCleanup := route.afterCleanup
+	route.afterCleanup = func() error { return peer.verdict(afterCleanup()) }
+	return route, nil
+}
+
+// NewWireGuardBoundEngine is NewWireGuardBound's device lent to several leases
+// (#275 stage 5): one renewal job's device, whose outer endpoint DNS and UDP
+// use only the job's Network. The peer stays reserved until Close confirms
+// cleanup; an unconfirmed close quarantines it like a bound Route.
+func NewWireGuardBoundEngine(config string, binding NetworkBinding) (*Engine, error) {
+	return newWireGuardBoundEngine(config, binding, defaultNetworkBind)
+}
+func newWireGuardBoundEngine(config string, binding NetworkBinding, makeBind func(*boundNetwork) (conn.Bind, error)) (*Engine, error) {
+	n, err := newBoundNetwork(binding)
+	if err != nil {
+		return nil, err
+	}
+	peer, err := startBoundWireGuard(config, n, makeBind)
+	if err != nil {
+		return nil, err
+	}
+	cleanup := n.cleanup(peer.close)
+	// Engine.Close closes every lease, joining its workers, before this runs.
+	return newEngine(peer.dial, func() error {
+		err := cleanup()
+		if err == nil && !n.confirmed() {
+			n.unconfirmed()
+			err = errRouteCleanup
+		}
+		return peer.verdict(err)
+	}), nil
+}
+
+// One started bound device, reserved for its peer identity until its owner
+// reports a cleanup verdict.
+type boundWireGuardPeer struct {
+	identity [32]byte
+	network  *boundNetwork
+	engine   *device.Device
+	bind     conn.Bind
+	dial     dialFunc
+}
+
+func (p *boundWireGuardPeer) release() {
+	boundWireGuardOwners.Lock()
+	delete(boundWireGuardOwners.reserved, p.identity)
+	boundWireGuardOwners.Unlock()
+}
+
+func (p *boundWireGuardPeer) close() error {
+	p.engine.Close()
+	if p.bind.Close() != nil {
+		p.network.unconfirmed()
+		quarantineBoundWireGuard(p.identity, p.engine, p.bind, p.network)
+		return errRouteCleanup
+	}
+	return nil
+}
+
+// Before publication: close what started, then release the reservation (a
+// quarantine still refuses the peer).
+func (p *boundWireGuardPeer) rollback(cause error) error {
+	p.network.stop()
+	p.close()
+	if !p.network.confirmed() {
+		p.network.unconfirmed()
+		quarantineBoundWireGuard(p.identity, p.engine, p.bind, p.network)
+	}
+	err := p.network.failure(cause)
+	p.release()
+	return err
+}
+
+// Keep the peer reserved throughout publication and native Close, worker joins
+// and the callback cleanup verdict. Only complete confirmed cleanup permits a
+// replacement owner for this identity.
+func (p *boundWireGuardPeer) verdict(err error) error {
+	if err != nil {
+		quarantineBoundWireGuard(p.identity, p.engine, p.bind, p.network)
+		return err
+	}
+	p.release()
+	return nil
+}
+
+func startBoundWireGuard(config string, n *boundNetwork, makeBind func(*boundNetwork) (conn.Bind, error)) (*boundWireGuardPeer, error) {
+	parsed, err := parseWireGuard(config)
+	if err != nil {
 		return nil, n.failure(errConfig)
 	}
 	identity := boundWireGuardIdentity(parsed.ipc)
@@ -93,15 +188,11 @@ func newWireGuardBound(config, username, password, realm, allowedHosts string, b
 		}
 		return nil, n.failure(err)
 	}
-	releaseReservation := func() {
-		boundWireGuardOwners.Lock()
-		delete(boundWireGuardOwners.reserved, identity)
-		boundWireGuardOwners.Unlock()
-	}
-	published := false
+	peer := &boundWireGuardPeer{identity: identity, network: n}
+	started := false
 	defer func() {
-		if !published {
-			releaseReservation()
+		if !started {
+			peer.release()
 		}
 	}()
 	bind, err := makeBind(n)
@@ -129,29 +220,12 @@ func newWireGuardBound(config, username, password, realm, allowedHosts string, b
 	logger := device.NewLogger(device.LogLevelSilent, "")
 	logger.Verbosef = func(string, ...any) {}
 	logger.Errorf = func(string, ...any) {}
-	engine := device.NewDevice(tun, bind, logger)
-	closeEngine := func() error {
-		engine.Close()
-		if bind.Close() != nil {
-			n.unconfirmed()
-			quarantineBoundWireGuard(identity, engine, bind, n)
-			return errRouteCleanup
-		}
-		return nil
+	peer.engine = device.NewDevice(tun, bind, logger)
+	peer.bind = bind
+	if peer.engine.IpcSet(parsed.ipc) != nil || !n.active(context.Background()) || peer.engine.Up() != nil {
+		return nil, peer.rollback(errConnect)
 	}
-	rollback := func(cause error) (*Route, error) {
-		n.stop()
-		closeEngine()
-		if !n.confirmed() {
-			n.unconfirmed()
-			quarantineBoundWireGuard(identity, engine, bind, n)
-		}
-		return nil, n.failure(cause)
-	}
-	if engine.IpcSet(parsed.ipc) != nil || !n.active(context.Background()) || engine.Up() != nil {
-		return rollback(errConnect)
-	}
-	route, err := newRouteWithCleanup(username, password, realm, allowedHosts, func(ctx context.Context, target string) (net.Conn, error) {
+	peer.dial = func(ctx context.Context, target string) (net.Conn, error) {
 		if !n.active(ctx) {
 			return nil, errConnect
 		}
@@ -164,23 +238,7 @@ func newWireGuardBound(config, username, password, realm, allowedHosts string, b
 			return nil, errConnect
 		}
 		return connection, nil
-	}, n.cleanup(closeEngine))
-	if err != nil {
-		return rollback(err)
 	}
-	n.finish(route)
-	afterCleanup := route.afterCleanup
-	route.afterCleanup = func() error {
-		if err := afterCleanup(); err != nil {
-			quarantineBoundWireGuard(identity, engine, bind, n)
-			return err
-		}
-		// Keep the peer reserved throughout publication and native Close, worker
-		// joins and the callback cleanup verdict. Only complete confirmed cleanup
-		// permits a replacement owner for this identity.
-		releaseReservation()
-		return nil
-	}
-	published = true
-	return route, nil
+	started = true
+	return peer, nil
 }

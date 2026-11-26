@@ -20,6 +20,10 @@ import net.fstab.tachiai.presentation.validProviderInstanceId
 //
 //   adb shell content call --uri content://net.fstab.tachiai.debug.abema-renewal --method renew [--arg <instance>]
 //
+// Method renew-job-network instead captures the active Network for that one
+// attempt, as the renewal job captures its JobParameters Network, so its routes
+// take the job's path through the route owner (#275 stage 5).
+//
 // The reply is one closed constant, AbemaRenewalTrigger. Each accepted call is
 // a real ABEMA account confirmation.
 class AbemaRenewalTriggerProvider : ContentProvider() {
@@ -36,8 +40,9 @@ class AbemaRenewalTriggerProvider : ContentProvider() {
     override fun call(method: String, arg: String?, extras: Bundle?): Bundle {
         val uid = Binder.getCallingUid()
         if (!enabled() || uid != SHELL_UID && uid != ROOT_UID) throw SecurityException("Not available")
-        val result = if (method != METHOD || extras?.isEmpty == false || arg != null && !validProviderInstanceId(arg)) INVALID
-            else AndroidAbemaRenewalJobs.renewNow(checkNotNull(context), arg).name
+        val result = if (method !in setOf(METHOD, METHOD_JOB_NETWORK) || extras?.isEmpty == false ||
+            arg != null && !validProviderInstanceId(arg)) INVALID
+            else AndroidAbemaRenewalJobs.renewNow(checkNotNull(context), arg, jobNetwork = method == METHOD_JOB_NETWORK).name
         return Bundle().apply { putString("result", result) }
     }
 
@@ -52,6 +57,7 @@ class AbemaRenewalTriggerProvider : ContentProvider() {
 
     private companion object {
         const val METHOD = "renew"
+        const val METHOD_JOB_NETWORK = "renew-job-network"
         const val INVALID = "INVALID_REQUEST"
         // android.os.Process.SHELL_UID and ROOT_UID are not public SDK constants.
         const val SHELL_UID = 2000

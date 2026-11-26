@@ -156,9 +156,17 @@ class ConfiguredSourceStoreTest {
             item.entry.resource.intent.name, item.entry.title, item.entry.availability.name)
         val startMarkerIndex = record(count = 1).size + textFields.sumOf { 2 + it.length }
         val badStartMarker = valid.copyOf().apply { this[startMarkerIndex] = 2 }
-        val invalid = listOf(byteArrayOf(1), record(version = 2), record(owner = secondInstance.id),
+        // Version 2 (#713): the listed and real length markers follow the start marker.
+        val badDurationMarker = valid.copyOf().apply { this[startMarkerIndex + 1] = 2 }
+        val badReplayMarker = valid.copyOf().apply { this[startMarkerIndex + 2] = 2 }
+        fun withLength(value: Int) = valid.copyOfRange(0, startMarkerIndex + 1) + byteArrayOf(1) +
+            java.nio.ByteBuffer.allocate(4).putInt(value).array() + valid.copyOfRange(startMarkerIndex + 2, valid.size)
+        assertEquals(3_600L, Memory().apply { bytes = withLength(3_600) }.let { store(it).read().single().entry.durationSeconds })
+        val invalid = listOf(byteArrayOf(1), record(version = 0), record(version = ConfiguredSourceStore.RECORD_VERSION + 1),
+            record(owner = secondInstance.id),
             record(providerName = "abema"), record(count = -1), record(count = 33), record(count = 1),
             valid + byteArrayOf(0), valid.dropLast(1).toByteArray(), badQualityMarker, badStartMarker,
+            badDurationMarker, badReplayMarker, withLength(0), withLength(-1), withLength(MAX_CATALOG_DURATION_SECONDS.toInt() + 1),
             ByteArray(PRIVATE_SECRET_LIMIT + 1))
         invalid.forEach { bytes ->
             val broken = Memory().apply { this.bytes = bytes.copyOf() }; val configured = store(broken)
@@ -224,6 +232,96 @@ class ConfiguredSourceStoreTest {
         assertEquals(2, latest.size); assertEquals(latest, second.read { error("No legacy read") })
         assertThrows(Exception::class.java) { first.remove(UUID.randomUUID().toString(), { emptyList() }) }
         RandomAccessFile(file, "rw").use { handle -> handle.channel.tryLock().use { lock -> assertNotNull(lock) } }
+    }
+
+    // Replay lengths (#713) on an ABEMA instance's list.
+    private val abema = defaultProviderInstances().single { it.service == PrototypeService.ABEMA }
+    private fun abemaStore(memory: Memory) = ConfiguredSourceStore(memory, abema.id, ProviderId("abema"))
+    private fun slot(id: String, listed: Long? = 17_100) = CatalogEntry(CatalogResource(ProviderId("abema"), "slot", "sumo/$id",
+        CatalogIntent.BROADCAST), "Broadcast $id", CatalogAvailability.AVAILABLE, durationSeconds = listed)
+    private val abemaVideo = CatalogEntry(CatalogResource(ProviderId("abema"), "episode", "394-72_s10_p1", CatalogIntent.VIDEO),
+        "Digest", CatalogAvailability.AVAILABLE, durationSeconds = 1_800)
+
+    @Test fun addedLengthsSurviveRestartAndRefreshKeepsAKnownRealLength() {
+        val memory = Memory(); val configured = abemaStore(memory)
+        val day15 = configured.add(slot("day15"), 12_240, { emptyList() }).single()
+        configured.add(abemaVideo, { emptyList() })
+        val reopened = abemaStore(memory).read { error("No legacy read") }
+        assertEquals(listOf(17_100L, 1_800L), reopened.map { it.entry.durationSeconds })
+        assertEquals(listOf(12_240L, null), reopened.map { it.replayLengthSeconds })
+        // The real length replaces the listed slot span where it is shown.
+        assertEquals(listOf(12_240L, 1_800L), reopened.map { it.shownEntry.durationSeconds })
+        assertEquals(slot("day15"), reopened.first().entry)
+        // Refresh metadata replaces the listing's metadata and keeps the real length unless given a newer one.
+        val renamed = slot("day15").copy(title = "Renamed broadcast")
+        assertEquals(12_240L, configured.refresh(day15.id, renamed, { emptyList() }).first().replayLengthSeconds)
+        assertEquals(renamed, abemaStore(memory).read().first().entry)
+        assertEquals(12_300L, configured.refresh(day15.id, renamed, 12_300, { emptyList() }).first().replayLengthSeconds)
+        assertEquals(12_300L, abemaStore(memory).read().first().shownEntry.durationSeconds)
+        // Only a broadcast holds a real length, within the display bounds.
+        listOf<() -> Unit>(
+            { ConfiguredSource(day15.id, abema.id, abemaVideo, replayLengthSeconds = 60) },
+            { ConfiguredSource(day15.id, abema.id, slot("day15"), replayLengthSeconds = 0) },
+            { ConfiguredSource(day15.id, abema.id, slot("day15"), replayLengthSeconds = MAX_CATALOG_DURATION_SECONDS + 1) },
+        ).forEach { assertThrows(IllegalArgumentException::class.java) { it() } }
+    }
+
+    @Test fun recordedReplayLengthsFillOnlyMissingBroadcastLengthsAndWriteOnlyWhenNew() {
+        val memory = Memory(); val configured = abemaStore(memory)
+        configured.add(slot("day14"), { emptyList() })
+        configured.add(slot("day15"), 12_240, { emptyList() })
+        configured.add(abemaVideo, { emptyList() })
+        val writes = memory.writes
+        val removed = slot("day13").resource
+        val updated = configured.recordReplayLengths(mapOf(slot("day14").resource to 8_853L, slot("day15").resource to 99L,
+            abemaVideo.resource to 100L, removed to 5L), { error("No legacy read") })
+        assertEquals(listOf(8_853L, 12_240L, null), updated.map { it.replayLengthSeconds })
+        assertEquals(writes + 1, memory.writes)
+        assertEquals(updated, abemaStore(memory).read())
+        // A removed item is not recreated, and nothing new writes nothing.
+        assertEquals(3, updated.size)
+        assertEquals(updated, configured.recordReplayLengths(mapOf(slot("day14").resource to 8_900L, removed to 5L), { emptyList() }))
+        assertEquals(writes + 1, memory.writes)
+        assertEquals(updated, configured.recordReplayLengths(mapOf(slot("day15").resource to 0L), { emptyList() }))
+        assertEquals(writes + 1, memory.writes)
+    }
+
+    // A record as builds before #713 wrote it: version 1, without lengths.
+    private fun versionOneRecord(items: List<ConfiguredSource>) = ByteArrayOutputStream().also { output ->
+        DataOutputStream(output).use { data ->
+            data.writeInt(1); data.writeUTF(abema.id); data.writeUTF("abema"); data.writeInt(items.size)
+            items.forEach { source ->
+                val entry = source.entry; val resource = entry.resource
+                data.writeUTF(source.id); data.writeUTF(resource.kind); data.writeUTF(resource.identity); data.writeUTF(resource.intent.name)
+                data.writeUTF(entry.title); data.writeUTF(entry.availability.name)
+                data.writeBoolean(entry.scheduledStartEpochMs != null); entry.scheduledStartEpochMs?.let(data::writeLong)
+                val track = source.quality.video.track
+                data.writeBoolean(track != null)
+                if (track != null) { data.writeUTF(track.codec.name); data.writeInt(track.bitrateBps ?: -1)
+                    data.writeInt(track.width ?: -1); data.writeInt(track.height ?: -1) }
+                data.writeBoolean(false)
+            }
+        }
+    }.toByteArray()
+
+    @Test fun versionOneRecordsStayReadableAndTheNextMutationWritesVersionTwo() {
+        val day15 = ConfiguredSource(UUID.randomUUID().toString(), abema.id,
+            slot("day15", listed = null).copy(scheduledStartEpochMs = 1_763_773_200_000L), NativeQualityPreferences(video = video))
+        val digest = ConfiguredSource(UUID.randomUUID().toString(), abema.id, abemaVideo.copy(durationSeconds = null))
+        val original = versionOneRecord(listOf(day15, digest))
+        val memory = Memory().apply { bytes = original.copyOf() }; val configured = abemaStore(memory)
+        assertEquals(listOf(day15, digest), configured.read { error("No legacy read") })
+        // Reading does not rewrite the record.
+        assertArrayEquals(original, memory.bytes); assertEquals(0, memory.writes)
+        // A real length read later is saved with the item, as version 2.
+        val updated = configured.recordReplayLengths(mapOf(day15.entry.resource to 12_240L), { error("No legacy read") })
+        assertEquals(listOf(day15.copy(replayLengthSeconds = 12_240), digest), updated)
+        assertEquals(ConfiguredSourceStore.RECORD_VERSION, java.io.DataInputStream(memory.bytes!!.inputStream()).readInt())
+        assertEquals(updated, abemaStore(memory).read { error("No legacy read") })
+        // Other mutations keep every older field.
+        val reordered = configured.reorder(listOf(digest.id, day15.id), { error("No legacy read") })
+        assertEquals(listOf(digest, day15.copy(replayLengthSeconds = 12_240)), reordered)
+        assertEquals(reordered, abemaStore(memory).read())
     }
 
     @Test fun catalogBindingsAcceptReservedInstancesAndRejectNoncanonicalIdsWithoutChangingLegacyBindings() {

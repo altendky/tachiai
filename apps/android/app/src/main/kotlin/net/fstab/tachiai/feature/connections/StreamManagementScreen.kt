@@ -390,7 +390,7 @@ internal fun StreamManagementScreen(state: StreamManagementState,
                     Column(Modifier.weight(1f).heightIn(min = 48.dp).then(browse).padding(vertical = 8.dp)) {
                         Text(shownTitle, style = MaterialTheme.typography.titleMedium,
                             maxLines = 2, overflow = TextOverflow.Ellipsis)
-                        Text(entryDetails(source.entry, childCapability?.actionLabel), style = MaterialTheme.typography.bodySmall)
+                        Text(entryDetails(source.shownEntry, childCapability?.actionLabel), style = MaterialTheme.typography.bodySmall)
                     }
                     IconButton(onClick = { onRefresh(source.id) },
                         enabled = actionsEnabled && retryReady && capabilities?.refresh == CatalogAccess.AVAILABLE,

@@ -208,7 +208,12 @@ each finished ABEMA broadcast's real length is read in the background, a page
 at a time, and replaces the slot span when it arrives. Live, in-progress,
 upcoming and unreadable broadcasts keep the span, with no error. Any other
 catalog request or navigation comes first and ends a running read. Known
-lengths stay in memory for the app session, shared with the picker. Provider
+lengths stay in memory for the app session, shared with the picker. A
+configured broadcast shows the same real length
+([#713](https://github.com/altendky/tachiai/issues/713)): Add saves a length
+already known, and one without a saved length is read in the background after
+the shown listing, once per visit, and saved with the item. Refresh keeps a
+saved length. Provider
 adapters distinguish
 channel programs, series episodes and broadcaster videos. Exact videos and
 broadcasts do not advertise child browsing. Refresh and removal remain separate

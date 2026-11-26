@@ -117,8 +117,14 @@ internal class StreamManagementController(
     // background. Navigation and every other catalog call come first; they end
     // a running request, and its broadcasts are asked again after them.
     private val lengths = ReplayLengthRequests(lengthCache) // stateLock
+    // Configured broadcasts without a saved real length (#713) are asked after
+    // the shown listing, once per screen visit, and the lengths are saved with
+    // their items. A listing reload does not ask them again.
+    private val configuredLengths = ReplayLengthRequests(lengthCache) // stateLock
     private val lengthsRun = AtomicLong()
     private var lengthsActive = 0L // stateLock; the current request's run, if any.
+    private var lengthsWrite: Job? = null // stateLock
+    private var lengthsWriteAgain = false // stateLock
     private var foregroundCalls = 0 // stateLock
     @Volatile var pendingMutation: Job? = null
         private set
@@ -186,15 +192,21 @@ internal class StreamManagementController(
     // Browse episodes: a browsed collection's listing, like the picker's Episodes.
     private fun episodes(snapshot: StreamManagementState) = snapshot.query.parent?.intent == CatalogIntent.COLLECTION
     // One page of the shown episode listing's broadcasts at a time, once it has
-    // loaded and no other catalog call is pending. Known lengths apply at once.
+    // loaded and no other catalog call is pending, then configured broadcasts
+    // without a saved length. Known lengths apply at once.
     // Replay lengths leave continuations untouched, so this skips catalogCall.
     private fun fetchLengths(): Unit = synchronized(stateLock) {
         val snapshot = state.value
-        if (closed || foregroundCalls > 0 || !episodes(snapshot) || snapshot.loading) return
-        val shown = snapshot.entries.map(lengths.cache::withLength)
+        if (closed || foregroundCalls > 0 || snapshot.loading) return
+        val listing = episodes(snapshot)
+        val shown = if (listing) snapshot.entries.map(lengths.cache::withLength) else snapshot.entries
         if (shown != snapshot.entries) publish { it.copy(entries = shown) }
+        storeLengths()
         if (lengthsActive != 0L) return
-        val asked = lengths.next(shown)
+        val listed = if (listing) lengths.next(shown) else emptyList()
+        val owner = if (listed.isEmpty() && !snapshot.storageFailed) configuredLengths else lengths
+        val asked = if (owner === lengths) listed
+            else configuredLengths.next(snapshot.configured.orEmpty().filter { it.replayLengthSeconds == null }.map { it.entry })
         if (asked.isEmpty()) return
         val run = lengthsRun.incrementAndGet()
         lengthsActive = run
@@ -209,14 +221,42 @@ internal class StreamManagementController(
             val next = synchronized(stateLock) {
                 if (lengthsActive == run) lengthsActive = 0
                 if (closed) return@launch
-                lengths.finished(asked, result, completed).also {
+                owner.finished(asked, result, completed).also {
                     if (result is CatalogResult.Value) publish {
                         if (episodes(it)) it.copy(entries = it.entries.map(lengths.cache::withLength)) else it
                     }
                 }
             }
-            if (next || !completed) fetchLengths()
+            if (next || !completed) fetchLengths() else if (result is CatalogResult.Value) storeLengths()
         }
+    }
+    // Saves known real lengths of configured broadcasts that lack one, in the
+    // background and without the saving state; one write at a time. Shown
+    // items take the saved lengths without replacing a newer list.
+    private fun storeLengths(): Unit = synchronized(stateLock) {
+        val snapshot = state.value
+        if (closed || snapshot.storageFailed) return
+        val known = snapshot.configured.orEmpty().filter { it.replayLengthSeconds == null }
+            .mapNotNull { source -> lengths.cache[source.entry.resource]?.let { source.entry.resource to it } }.toMap()
+        if (known.isEmpty()) return
+        if (lengthsWrite != null) { lengthsWriteAgain = true; return }
+        val write = writes.launch(start = CoroutineStart.LAZY) {
+            try {
+                val saved = store.recordReplayLengths(known, legacy).associateBy { it.id }
+                publish { current -> current.copy(configured = current.configured?.map { source ->
+                    saved[source.id]?.takeIf { source.replayLengthSeconds == null && it.entry.resource == source.entry.resource }
+                        ?.replayLengthSeconds?.let { source.copy(replayLengthSeconds = it) } ?: source
+                }) }
+            } catch (error: Exception) {
+                diagnostics.report(FailureStage.CONFIGURED_SOURCES_WRITE, error)
+            } finally {
+                val again = synchronized(stateLock) { lengthsWrite = null; lengthsWriteAgain.also { lengthsWriteAgain = false } }
+                if (again) storeLengths()
+            }
+        }
+        lengthsWrite = write
+        StreamManagementWrites.track(instance.id, write)
+        write.start()
     }
     private fun clearDiscovery(failure: CatalogResult.Failure, keepCapabilities: Boolean = false, keepLink: Boolean = false) {
         lastLookup = null
@@ -279,7 +319,7 @@ internal class StreamManagementController(
                         CatalogResult.Failure(CatalogFailure.TEMPORARY),
                         message = if (storage) "Configured streams could not be read. Nothing was replaced. Retry to continue." else null) }
                 }
-            } finally { publishBrowse(revision) { it.copy(loading = false) } }
+            } finally { publishBrowse(revision) { it.copy(loading = false) }; fetchLengths() }
         }
     }
 
@@ -608,7 +648,7 @@ internal class StreamManagementController(
         }
         if (message != null) { publish { it.copy(link = dialog.copy(message = message)) }; return@synchronized }
         val revision = linkRevision.get()
-        mutate(expectedLinkRevision = revision) { store.add(entry, legacy) }
+        mutate(expectedLinkRevision = revision) { store.add(entry, knownReplayLength(entry.resource), legacy) }
         Unit
     }
 
@@ -667,7 +707,12 @@ internal class StreamManagementController(
                         // Close/supersession before this boundary discards retrieval.
                         // An accepted write then owns its independent lifecycle and
                         // the store rereads the latest UUID/order/quality atomically.
-                        mutate(refreshId = id, expectedBrowseRevision = revision) { store.refresh(id, result.value, legacy) }
+                        // A missing real length is asked again after the refresh.
+                        val resource = result.value.resource
+                        synchronized(stateLock) { configuredLengths.retry(resource) }
+                        mutate(refreshId = id, expectedBrowseRevision = revision) {
+                            store.refresh(id, result.value, knownReplayLength(resource), legacy)
+                        }
                     }
                     is CatalogResult.Failure -> failed(result, revision = revision)
                 }
@@ -677,9 +722,12 @@ internal class StreamManagementController(
                     diagnostics.report(FailureStage.CATALOG_LOAD, error)
                     publishBrowse(revision) { it.copy(failure = CatalogResult.Failure(CatalogFailure.TEMPORARY)) }
                 }
-            } finally { publishBrowse(revision) { it.copy(loading = false) } }
+            } finally { publishBrowse(revision) { it.copy(loading = false) }; fetchLengths() }
         }
     }
+    // A broadcast's real length already read this session, if any.
+    private fun knownReplayLength(resource: CatalogResource) =
+        lengths.cache[resource]?.takeIf { resource.intent == CatalogIntent.BROADCAST }
 
     private fun mutate(refreshId: String? = null, expectedBrowseRevision: Long? = null,
         expectedLinkRevision: Long? = null, action: () -> List<ConfiguredSource>): Job? {
@@ -702,6 +750,8 @@ internal class StreamManagementController(
                         if (refreshId != null) lastRefreshId = null
                         it.copy(configured = configured, failure = if (refreshId != null) null else it.failure,
                             message = null, link = if (expectedLinkRevision != null && currentLink(expectedLinkRevision)) null else it.link) }
+                    // An added or refreshed broadcast may still need its real length.
+                    fetchLengths()
                 } catch (error: Exception) {
                     diagnostics.report(FailureStage.CONFIGURED_SOURCES_WRITE, error)
                     if (!closed && mutationRevision.get() == revision)
@@ -722,7 +772,7 @@ internal class StreamManagementController(
     }
     fun add(entry: CatalogEntry) {
         if (entry.resource.providerId != catalog.providerId) { publish { it.copy(failure = CatalogResult.Failure(CatalogFailure.INVALID_INPUT)) }; return }
-        mutate { store.add(entry, legacy) }
+        mutate { store.add(entry, knownReplayLength(entry.resource), legacy) }
     }
     fun remove(id: String) { mutate { store.remove(id, legacy) } }
     fun move(id: String, delta: Int) { mutate { store.move(id, delta, legacy) } }

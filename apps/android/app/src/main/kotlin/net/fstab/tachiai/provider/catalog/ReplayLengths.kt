@@ -26,6 +26,8 @@ internal class ReplayLengthRequests(val cache: ReplayLengthCache) {
     private val tried = mutableSetOf<CatalogResource>()
     // A reloaded listing tries its broadcasts again.
     fun reset() = tried.clear()
+    // One broadcast is tried again, for example after Refresh metadata.
+    fun retry(resource: CatalogResource) { tried -= resource }
     // The next request, marked tried: up to REPLAY_LENGTH_LIMIT listed broadcasts without a known length.
     fun next(entries: List<CatalogEntry>): List<CatalogResource> = entries.map { it.resource }
         .filter { it.intent == CatalogIntent.BROADCAST && cache[it] == null && it !in tried }.distinct()

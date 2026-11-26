@@ -256,7 +256,11 @@ The user approved, on 2026-11-24, fetching the replay manifest (MPD only) of
 each finished broadcast listed in Episodes, to show its real length
 ([#672](https://github.com/altendky/tachiai/issues/672)). The same day the
 user asked for the provider screen's Browse episodes list to show them too; it
-uses the same operation and destinations. The metadata
+uses the same operation and destinations. At the user's request in
+[#713](https://github.com/altendky/tachiai/issues/713), configured
+broadcasts on the provider screen show and keep the same real length through
+the same operation and destinations; only the whole seconds are saved with
+the configured item. The metadata
 runtime's replay-length operation adds three cookie-free GETs, all on
 destinations playback already uses: the media token
 (`/v1/media/token` on `api.p-c3-e.abema-tv.com`, bearer), each requested

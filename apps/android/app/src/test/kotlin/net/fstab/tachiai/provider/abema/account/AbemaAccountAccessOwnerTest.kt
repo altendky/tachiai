@@ -495,4 +495,44 @@ class AbemaAccountAccessOwnerTest {
             f.marks.filter { it.startsWith("PROOF_REVOKED") })
         attachment.close()
     }
+    // #729: a held lease's durable check that read the store just before an adoption.
+    private fun durableCheckAcrossAdoption(change: Int): Pair<Fixture, Boolean> {
+        val f = Fixture(); val attachment = f.owner.attach(); val peer = f.owner.attach()
+        val lease = (attachment.acquire() as AbemaAccountAccessResult.Account).lease
+        assertTrue((peer.acquire() as AbemaAccountAccessResult.Account).lease.current())
+        f.wall = 1_500_000
+        fun replace(user: String, expiry: String) = f.store.replaceSnapshot(
+            decodedAbemaGrant(fixtureAccountToken(user, expiry), user, f.wall), f.wall, f.store.revision()) { true }
+        val base = f.ownerChecks
+        // The second owner read of a durable check follows its store read.
+        f.ownerHook = { when (f.ownerChecks - base) {
+            2 -> when (change) {
+                1 -> replace("different-account", "3000")
+                2 -> f.store.rollbackPublished(replace("intended-account", "3000"))
+                3 -> { replace("intended-account", "3000"); f.store.invalidateForget() }
+                else -> replace("intended-account", "3000")
+            }
+            4 -> if (change == 4) replace("intended-account", "4000") // A second renewal during the repeat.
+        } }
+        val checked = lease.checkWorker()
+        f.ownerHook = {}
+        assertEquals(checked, lease.current())
+        peer.close(); attachment.close()
+        return f to checked
+    }
+    @Test fun aHeldLeaseCheckThatReadBeforeAnAdoptionFollowsTheRenewedGrant() {
+        val (f, checked) = durableCheckAcrossAdoption(0)
+        assertTrue(checked)
+        assertTrue("DURABLE_RENEWED" in f.marks)
+        assertTrue(f.marks.none { it.startsWith("PROOF_REVOKED") })
+        assertEquals(1, f.profiles.get())
+    }
+    @Test fun aHeldLeaseCheckStillFailsClosedForAnyOtherChangeOrASecondRenewal() {
+        for (change in 1..4) {
+            val (f, checked) = durableCheckAcrossAdoption(change)
+            assertFalse("change $change", checked)
+            assertEquals("change $change", change == 4, "DURABLE_RENEWED" in f.marks)
+            assertEquals("change $change", 1, f.marks.count { it.startsWith("PROOF_REVOKED") })
+        }
+    }
 }

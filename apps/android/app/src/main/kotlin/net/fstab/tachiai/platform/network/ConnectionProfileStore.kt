@@ -101,6 +101,7 @@ internal class ConnectionProfileStore(private val secrets: PrivateSecretStore, p
     // snapshot(ids) with the revision of exactly the record it decoded.
     fun snapshotRevisioned(ids: Set<String>): Pair<Map<String, ConnectionProfile>, PrivateSecretRevision?> {
         require(ids.size <= MAX_PROVIDER_ROUTES && ids.all { UUID.fromString(it).toString() == it })
+        if (ids.isEmpty()) return emptyMap<String, ConnectionProfile>() to null
         return locked {
             val stored = secrets.readRevisioned()
             read(stored.plaintext).filter { it.id in ids }.associate { it.id to it.profile } to stored.revision

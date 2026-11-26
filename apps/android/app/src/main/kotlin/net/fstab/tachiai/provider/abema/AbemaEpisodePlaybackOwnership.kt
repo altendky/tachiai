@@ -65,9 +65,11 @@ internal fun androidAbemaEpisodePlaybackOwnership(context: Context, instance: Pr
     expectedProof: String? = null): AbemaEpisodePlaybackOwnership {
     val application = context.applicationContext
     // Each media request re-checks this owner (#745); unchanged store
-    // revisions keep its last verdict.
-    val reads = ProviderRouteOwnerReads(providerInstanceStore(application), connectionProfileStore(application),
-        { legacyProviderSettings(application) })
+    // revisions keep its last verdict. Built on the first worker read.
+    val reads by lazy {
+        ProviderRouteOwnerReads(providerInstanceStore(application), connectionProfileStore(application),
+            { legacyProviderSettings(application) })
+    }
     // This factory runs on main. Its inputs are the viewer's worker-built frozen
     // plan; only checkWorker reads protected state. Legacy single-route callers
     // can derive a candidate proof solely from those already-captured inputs.

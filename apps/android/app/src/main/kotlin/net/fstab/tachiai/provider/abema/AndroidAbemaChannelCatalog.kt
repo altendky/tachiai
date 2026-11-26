@@ -60,7 +60,7 @@ internal fun captureAbemaCatalogRouteOwner(instanceId: String, readInstances: ()
 internal fun abemaCatalogRouteOwnerRead(reads: ProviderRouteOwnerReads, captured: AbemaCatalogRouteOwner,
     instanceId: String, expectedProof: String?): AbemaCatalogRouteOwner {
     var observed: AbemaCatalogRouteOwner? = null
-    return reads.current(captured to expectedProof) { instances, profiles ->
+    return reads.current(Triple(captured, instanceId, expectedProof)) { instances, profiles ->
         captureAbemaCatalogRouteOwner(instanceId, instances, profiles, expectedProof).also { observed = it }
             .takeIf(captured::sameOwnership)?.let { captured }
     } ?: checkNotNull(observed)

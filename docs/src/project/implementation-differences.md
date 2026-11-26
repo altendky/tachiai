@@ -18,6 +18,13 @@ application, Kotlin provider/player/storage code and Rust timing core.
 | Launcher integration | The same APK declares ordinary Android and Leanback launcher categories, with Leanback and touchscreen support marked optional. | Make the app discoverable through the platform's applicable launcher without requiring a touchscreen. This records manifest integration, not approval of different in-app navigation or visual design. | [Manifest][manifest] |
 | Device-mode detection | TV adaptations use Android's Configuration UI mode; ordinary phone mode uses the shared default path. | Select the applicable system integration inside one application. Detection is not authorization for every UX branch it selects. | [Configuration detection][detection] |
 
+Android implements [automatic route recovery](prototype-ux.md#automatic-route-recovery)
+(#271) with its native route sessions: the cached viewer's process-owned run
+closes the switched-away route session, a fresh provider startup scope validates
+the next route, and ABEMA's process-wide WebView proxy override moves to the new
+route before its feeds retry. The web viewer and Apple have no configured
+routes yet; the approved common UX applies when they do.
+
 Android native Twitch live playback requests Twitch's low-latency playlists,
 plays the trailing prefetch hints as ordinary segments, and targets 6 s behind
 the live edge

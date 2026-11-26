@@ -112,7 +112,9 @@ internal class CatalogTwitchPreparation(context: Context, private val instanceId
                 ?: if (startupValidation == null) connection.validate(force = true)
                 else throw IOException("Startup validation is no longer current")
             report(result.summary, onStatus)
-            lease = result.lease ?: throw IOException("Playback connection unavailable")
+            // #271: a validation that never reached Twitch keeps its typed evidence.
+            lease = result.lease ?: throw result.transportFailure?.let(::ProviderTransportException)
+                ?: IOException("Playback connection unavailable")
             acceptanceDeadlineMs = minOf(checkNotNull(lease).deadlineMs, sourceDeadline)
             if (!checkStored(force = true) || monotonicMs() >= acceptanceDeadlineMs)
                 throw IOException("Playback connection ended")

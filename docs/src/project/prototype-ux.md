@@ -1268,11 +1268,16 @@ implemented as follows and is not yet validated on a device:
   6:00". A request that the recorded history already covers moves the feed at
   once, as before.
 - **Use what is recorded.** Instead of refusing, the feed to delay first jumps
-  back as far as its recorded history allows, to 5 s inside its oldest point,
-  like a skip back. Only the shortfall is built: 90 s requested with 60 s
-  recorded jumps back 55 s and builds 35 s.
+  back as far as its recorded history allows, to 30 s inside its oldest point.
+  Only the shortfall is built: 90 s requested with 60 s recorded jumps back
+  30 s and builds 60 s. The margin is the rewind buffer's own 30 s, not a
+  skip's 5 s. The oldest part of a window can still be the provider's own
+  segments, which slide away unless the recorder has cached them. At startup on
+  the emulator, a frame held 5 s inside was overtaken within a second
+  (#707).
 - **Hold.** The feed then freezes on that frame. Its pane shows "Building
-  delay… 0:35", counting down the seconds still needed. The other feed and its
+  delay… 1:00", counting down the seconds still needed. Nothing is judged
+  while the feed buffers after its jump. The other feed and its
   audio keep playing. The count comes from the two feeds' own clocks, not a
   timer, so it pauses while the other feed buffers or plays an advertisement.
   The held feed's rewind buffer grows while it is held, so the frame it froze
@@ -1309,10 +1314,16 @@ implemented as follows and is not yet validated on a device:
 - **Only while playing.** A paused pair can't build a delay. The request is
   refused with "That needs more recorded history; a delay builds only while
   both feeds play."
-- **Stops.** If the other feed stops playing, the held feed's recorded history
-  runs out (the 256 MB limit), or the other feed hasn't played on within
-  60 s beyond the requested amount, the build stops, both feeds pause, and the
-  notice names the cause.
+- **Window passing the frame.** If the window's oldest point still passes the
+  held frame (a segment the recorder didn't cache in time, or the 256 MB
+  limit), the frame moves back to 30 s inside. The countdown grows by what was
+  lost, so the offset stays exact. The notice reads "B's oldest history moved
+  on; the delay takes a little longer." After three such moves the build
+  stops.
+- **Stops.** If the other feed stops playing, the held feed's history keeps
+  running out, or the other feed hasn't played on within 60 s beyond the
+  requested amount, the build stops, both feeds pause, and the notice names the
+  cause.
 - **Either feed.** Either feed can be held, ABEMA or Twitch, beside a live feed
   or a replay. Only a live feed is held: a replay already has its history.
 - **Same everywhere.** Phone, tablet and TV show and handle it identically.

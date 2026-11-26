@@ -54,12 +54,24 @@ internal fun nativeDelayBuildPlan(a: NativeTimingSnapshot?, b: NativeTimingSnaps
     return NativeDelayBuildPlan(NativeDelayBuildOutcome.BUILD, side, movement, deltaMs)
 }
 
+// A held frame stays this far inside the oldest point of its window. The
+// oldest part of a window can still be the provider's own segments, which
+// slide away unless the recorder caches each before it leaves; the recorder
+// starts up to 30 s (or half the window) ahead. At startup a frame held only
+// 5 s (the skip margin) inside was overtaken within a second on the emulator,
+// so a held frame keeps the rewind buffer's own 30 s margin (#707).
+internal const val DELAY_BUILD_HOLD_MARGIN_MS = LIVE_REWIND_MARGIN_MS
+
+// If the window slides past the held frame anyway, the frame moves back
+// inside, which only lengthens the build, up to this many times.
+internal const val DELAY_BUILD_REANCHOR_LIMIT = 3
+
 // How far back the feed to delay moves at once, using the history it already
-// has: back to LIVE_SKIP_START_MARGIN_MS inside its oldest recorded point, and
-// never the whole movement (that would be an ordinary shift).
+// has: back to DELAY_BUILD_HOLD_MARGIN_MS inside its oldest point, and never
+// the whole movement (that would be an ordinary shift).
 internal fun nativeDelayBuildRecordedMs(positionMs: Long?, movementMs: Long): Long {
     if (positionMs == null || movementMs >= 0 || movementMs == Long.MIN_VALUE) return 0
-    return (positionMs - LIVE_SKIP_START_MARGIN_MS).coerceIn(0, -movementMs - 1)
+    return (positionMs - DELAY_BUILD_HOLD_MARGIN_MS).coerceIn(0, -movementMs - 1)
 }
 
 // How much further back the held feed still has to go, from the live

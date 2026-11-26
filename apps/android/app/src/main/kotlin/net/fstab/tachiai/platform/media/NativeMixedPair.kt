@@ -66,6 +66,7 @@ internal class NativeMixedPair(
         var remainingMs = -movementMs
         var resumeClockMs: Long? = null
         var resumeStartedMs = 0L
+        var reanchors = 0
     }
     private var delayPending: DelayBuild? = null
     // The held feed and the countdown to its resume, for its pane.
@@ -622,9 +623,10 @@ internal class NativeMixedPair(
             failDelayBuild(build, "$peerName stopped playing"); return
         }
         val position = heldValue.positionMs
-        // Only the byte limit can drop history the hold still needs.
-        if (position != null && position < 0) { failDelayBuild(build, "$heldName's recorded history ran out"); return }
+        // Nothing is judged while the held feed buffers, as right after its
+        // jump back into recorded history: its position may not be settled.
         if (heldValue.state != 3 || heldValue.playingAd || peerValue.state != 3 || peerValue.playingAd) return
+        if (position != null && position < 0) { reanchorDelayBuild(build, heldValue); return }
         if (heldValue.contentTimeMs == null || position == null ||
             (if (build.peerLive) peerValue.contentTimeMs else peerValue.positionMs) == null) return
         val progress = buildProgress(build, heldValue, peerValue)
@@ -652,6 +654,28 @@ internal class NativeMixedPair(
         build.resumeClockMs = progress.resumeClockMs
         build.resumeStartedMs = clockMs()
         build.remainingMs = 0
+    }
+
+    // The window slid past the held frame: a segment the recorder didn't cache
+    // before it left, or the byte limit. Move the frame back inside; the
+    // countdown grows by what was lost, so the offset is still exact.
+    private fun reanchorDelayBuild(build: DelayBuild, heldValue: NativeTimingSnapshot) {
+        val heldName = build.side.name
+        val duration = heldValue.durationMs
+        if (build.reanchors >= DELAY_BUILD_REANCHOR_LIMIT || duration == null || duration <= 0) {
+            failDelayBuild(build, "$heldName's recorded history ran out"); return
+        }
+        val target = minOf(DELAY_BUILD_HOLD_MARGIN_MS, duration / 2)
+        val plan = nativeSeekPlan(heldValue, target)
+        val accepted = if (plan.outcome == NativeSeekOutcome.REQUESTED && plan.targetMs == target)
+            try { build.held.seekToMs(target) } catch (_: Exception) { NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE) }
+            else NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE)
+        if (closed || delayPending !== build) return
+        if (accepted.outcome != NativeSeekOutcome.REQUESTED || accepted.targetMs != target) {
+            failDelayBuild(build, "$heldName's recorded history ran out"); return
+        }
+        build.reanchors++
+        status = "$heldName's oldest history moved on; the delay takes a little longer."
     }
 
     // User-marked alignment may split an exact movement across both windows.

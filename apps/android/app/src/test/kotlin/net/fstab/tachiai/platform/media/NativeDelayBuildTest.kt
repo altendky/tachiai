@@ -18,8 +18,16 @@ class NativeDelayBuildTest {
     // `historyMs` behind the live edge and keeps that start while held, as a
     // growing rewind buffer does (#697). The live edge is 2 s behind now and
     // the live point (target and default position) 8 s behind the edge.
+    // providerWindowMs: the window's oldest part is the provider's own and
+    // slides with the live edge, except from retainedFromMs on, which the
+    // recorder cached in time. bufferAfterSeek: reads that report BUFFERING
+    // after each seek.
     private class Live(private val clock: LongArray, historyMs: Long, behindEdgeMs: Long) : NativePairMember {
         var start = clock[0] - 2_000 - historyMs
+        var providerWindowMs: Long? = null
+        var retainedFromMs = Long.MAX_VALUE
+        var bufferAfterSeek = 0
+        private var buffering = 0
         var content = clock[0] - 2_000 - behindEdgeMs
         var playing = true
         var playWhenReady = true
@@ -35,22 +43,26 @@ class NativeDelayBuildTest {
         override fun timingSnapshot(): NativeTimingSnapshot {
             sync()
             val end = clock[0] - 2_000
-            val duration = end - start
-            val position = content - start
-            return NativeTimingSnapshot(position, duration, position + 5_000, clock[0] - content, start,
-                duration - 8_000, true, true, true, true, ad, playing, playWhenReady, 3, 1f, 10_000)
+            val first = providerWindowMs?.let { maxOf(start, minOf(end - it, retainedFromMs)) } ?: start
+            val duration = end - first
+            val position = content - first
+            val state = if (buffering > 0) { buffering--; 2 } else 3
+            return NativeTimingSnapshot(position, duration, position + 5_000, clock[0] - content, first,
+                duration - 8_000, true, true, true, true, ad, playing, playWhenReady, state, 1f, 10_000)
         }
         override fun seekToMs(targetMs: Long): NativeSeekPlan {
             val sample = timingSnapshot()
             val plan = nativeSeekPlan(sample, targetMs)
-            if (plan.outcome == NativeSeekOutcome.REQUESTED) { seeks += targetMs; content = start + targetMs }
+            if (plan.outcome == NativeSeekOutcome.REQUESTED) {
+                seeks += targetMs; content = checkNotNull(sample.windowStartMs) + targetMs; buffering = bufferAfterSeek
+            }
             return plan
         }
         override fun seekLiveDefault(): NativeSeekPlan {
             val sample = timingSnapshot()
             val plan = nativeLiveDefaultPlan(sample)
             if (plan.outcome == NativeSeekOutcome.REQUESTED || plan.outcome == NativeSeekOutcome.CLAMPED) {
-                defaultSeeks++; content = start + checkNotNull(sample.defaultPositionMs)
+                defaultSeeks++; content = checkNotNull(sample.windowStartMs) + checkNotNull(sample.defaultPositionMs)
             }
             return plan
         }
@@ -92,10 +104,11 @@ class NativeDelayBuildTest {
         assertEquals(-25_000L, nativeDelayBuildNeedMs(-5_000, 30_000, 0))
         assertEquals(0L, nativeDelayBuildRemainingMs(-5_000, 30_000, 0))
         // A jump back into recorded history counts as built.
-        assertEquals(43_000L, nativeDelayBuildRemainingMs(-90_000, 0, -47_000))
-        // What the recorded history covers at once: back to 5 s inside the
+        assertEquals(68_000L, nativeDelayBuildRemainingMs(-90_000, 0, -22_000))
+        // What the recorded history covers at once: back to 30 s inside the
         // oldest point, never the whole movement.
-        assertEquals(47_000L, nativeDelayBuildRecordedMs(52_000, -90_000))
+        assertEquals(22_000L, nativeDelayBuildRecordedMs(52_000, -90_000))
+        assertEquals(0L, nativeDelayBuildRecordedMs(29_000, -90_000))
         assertEquals(0L, nativeDelayBuildRecordedMs(4_000, -90_000))
         assertEquals(89_999L, nativeDelayBuildRecordedMs(200_000, -90_000))
         assertEquals(0L, nativeDelayBuildRecordedMs(null, -90_000))
@@ -235,18 +248,18 @@ class NativeDelayBuildTest {
 
     // Decision 5 asks for only the shortfall to be built (coordinator, 2026-11-25).
     @Test fun theRecordedHistoryIsUsedAtOnceAndOnlyTheShortfallIsBuilt() {
-        // B has 52 s of history behind it: it jumps back 47 s, keeping 5 s
-        // inside its oldest point, and builds the other 43 s.
+        // B has 52 s of history behind it: it jumps back 22 s, keeping 30 s
+        // inside its oldest point, and builds the other 68 s.
         val fixture = Fixture(historyB = 60_000)
         val before = fixture.relation()
         assertEquals(NativeSeekOutcome.REQUESTED, fixture.pair.shiftRelative(90_000).outcome)
-        assertEquals(listOf(LIVE_SKIP_START_MARGIN_MS), fixture.b.seeks)
+        assertEquals(listOf(DELAY_BUILD_HOLD_MARGIN_MS), fixture.b.seeks)
         assertFalse(fixture.b.playing)
-        assertEquals(NativeDelayBuildState(B, 43_000, 90_000), fixture.pair.delayBuild)
+        assertEquals(NativeDelayBuildState(B, 68_000, 90_000), fixture.pair.delayBuild)
         fixture.pair.poll()
-        assertEquals(43_000L, fixture.pair.delayBuild?.remainingMs)
-        assertEquals("Building delay… 0:43", delayBuildLabel(checkNotNull(fixture.pair.delayBuild).remainingMs))
-        fixture.advance(43_100); fixture.pair.poll(); fixture.advance(100); fixture.pair.poll()
+        assertEquals(68_000L, fixture.pair.delayBuild?.remainingMs)
+        assertEquals("Building delay… 1:08", delayBuildLabel(checkNotNull(fixture.pair.delayBuild).remainingMs))
+        fixture.advance(68_100); fixture.pair.poll(); fixture.advance(100); fixture.pair.poll()
         assertFalse(fixture.pair.busy)
         assertEquals(NativeTimingSettlement(1, 90_000), fixture.pair.lastTimingSettlement)
         assertEquals(before + 90_000, fixture.relation())
@@ -258,6 +271,41 @@ class NativeDelayBuildTest {
         assertTrue(canceled.pair.pause())
         assertEquals(previous, canceled.relation())
         assertTrue(checkNotNull(canceled.pair.lastDelayBuildEnd).restored)
+    }
+
+    // #707 on the emulator: a saved-offset restore at startup, with only the
+    // provider's ~56 s window, was stopped within a second as "recorded
+    // history ran out". The held frame now stays 30 s inside the oldest point,
+    // nothing is judged while it buffers after the jump, and a window start
+    // that still slides past it moves it back inside.
+    @Test fun aStartupRestoreLongerThanTheProviderWindowSurvives() {
+        fun run(recorderLagMs: Long): Fixture {
+            val fixture = Fixture(historyB = 56_000)
+            fixture.b.providerWindowMs = 56_000
+            // The recorder caches the oldest segments only after this long, so
+            // until then the window start slides with the live edge.
+            fixture.b.retainedFromMs = fixture.b.start + recorderLagMs
+            fixture.b.bufferAfterSeek = 3
+            val before = fixture.relation()
+            assertEquals(NativeSeekOutcome.REQUESTED, fixture.pair.alignRelative(115_000).outcome)
+            assertEquals(B, fixture.pair.delayBuild?.side)
+            // 48 s behind B: it jumps back 18 s and builds 97 s.
+            assertEquals(listOf(DELAY_BUILD_HOLD_MARGIN_MS), fixture.b.seeks)
+            assertEquals(97_000L, fixture.pair.delayBuild?.remainingMs)
+            for (second in 1..200) {
+                if (!fixture.pair.busy) break
+                fixture.advance(1_000); fixture.pair.poll()
+            }
+            assertFalse(fixture.pair.busy)
+            assertEquals(NativeTimingSettlement(1, 115_000), fixture.pair.lastTimingSettlement)
+            assertTrue(kotlin.math.abs(before + 115_000 - fixture.relation()) <= 1)
+            return fixture
+        }
+        // The window start slides 8 s before the recorder catches up: the
+        // frame 30 s inside is never reached. Seeks: the jump and the resume.
+        assertEquals(2, run(8_000).b.seeks.size)
+        // A recorder 40 s late: the frame is moved back inside once.
+        assertEquals(3, run(40_000).b.seeks.size)
     }
 
     // User, 2026-11-25: same-direction steps add, opposite steps reduce.
@@ -404,14 +452,14 @@ class NativeDelayBuildTest {
         val before = fixture.relation()
         val original = checkNotNull(fixture.b.timingSnapshot().positionMs)
         assertEquals(NativeSeekOutcome.REQUESTED, fixture.pair.shiftRelative(90_000).outcome)
-        // B first used 25 of its 30 s of history.
-        assertEquals(listOf(original - 25_000), fixture.b.seeks)
+        // B's 30 s of history is all within the hold margin: no jump.
+        assertTrue(fixture.b.seeks.isEmpty())
         fixture.advance(30_000); fixture.pair.poll()
         val plan = fixture.pair.goLive()
         assertEquals(NativeSeekOutcome.REQUESTED, plan.outcome)
         assertTrue(plan.keepsOffset)
         assertEquals(B, plan.limitedBy) // B's restored position is the nearer to live.
-        assertEquals(listOf(original - 25_000, original + 30_000 + plan.movementMs), fixture.b.seeks)
+        assertEquals(listOf(original + 30_000 + plan.movementMs), fixture.b.seeks)
         fixture.pair.poll()
         assertFalse(fixture.pair.busy)
         assertTrue(fixture.a.playing && fixture.b.playing)
@@ -462,10 +510,19 @@ class NativeDelayBuildTest {
         assertFalse(stopped.pair.requestedAdjustmentValid)
         assertFalse(checkNotNull(stopped.pair.lastDelayBuildEnd).canceled)
 
+        // The window passing the held frame moves it back inside a few times,
+        // then gives up.
         val evicted = Fixture()
         evicted.pair.shiftRelative(90_000)
         evicted.advance(10_000)
-        evicted.b.start = evicted.b.content + 1_000 // The byte limit dropped the held point.
+        repeat(DELAY_BUILD_REANCHOR_LIMIT) {
+            evicted.b.start = evicted.b.content + 1_000 // The byte limit dropped the held point.
+            evicted.pair.poll()
+            assertNotNull(evicted.pair.delayBuild)
+            assertEquals("B's oldest history moved on; the delay takes a little longer.", evicted.pair.status)
+        }
+        assertEquals(DELAY_BUILD_REANCHOR_LIMIT, evicted.b.seeks.size)
+        evicted.b.start = evicted.b.content + 1_000
         evicted.pair.poll()
         assertNull(evicted.pair.delayBuild)
         assertEquals("Building delay stopped: B's recorded history ran out; both paused.", evicted.pair.status)

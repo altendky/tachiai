@@ -66,13 +66,13 @@ class NativeMarkedAlignmentTest {
         val pair = NativeMixedPair(a, b, { true }, {})
         // A manual nudge never splits across both feeds. Without a full step
         // it builds the delay by holding A instead (#618): A first uses its
-        // recorded history, back to 5 s inside its oldest point. Canceling
-        // returns A to where it was, with B never moved.
+        // recorded history beyond 30 s inside its oldest point (none here).
+        // Canceling leaves A where it was, with B never moved.
         assertEquals(NativeSeekOutcome.REQUESTED, pair.shiftRelative(-26_400).outcome)
         assertEquals(NativeMixedSide.A, pair.delayBuild?.side)
-        assertEquals(listOf(5_000L), a.seekTargets)
         assertTrue(pair.pause())
-        assertEquals(listOf(5_000L, 20_500L), a.seekTargets)
+        assertTrue(a.seekTargets.isEmpty())
+        assertEquals(20_500L, a.value.positionMs)
         assertEquals(0, b.seeks)
         assertEquals(0L, pair.requestedAdjustmentMs)
         a.value = a.value.copy(playing = true, playWhenReady = true)

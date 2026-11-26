@@ -76,7 +76,7 @@ Earlier dated sections below describe the former experimental session limits.
 
 Failed feed panes offer **Go live** when playback has fallen behind the live
 window, or **Retry** for classified playback/network availability failures.
-Recovery creates a fresh session for that feed on its retained selected route,
+Recovery creates a fresh session for that feed on its current route,
 after its old session confirms cleanup. The other feed keeps playing; the viewer
 retains layout, mix/mutes and quality preferences. Live starts at the current
 provider default position; replay uses its last observed content position where
@@ -84,7 +84,9 @@ the current source supports that seek. The prior relative timing anchor becomes
 invalid. Repeated taps cannot create concurrent attempts, and late callbacks
 from a retired session cannot affect its replacement. Retries are user initiated;
 account, entitlement, licensing, policy and unsafe cleanup failures retain their
-existing settings/recovery requirements. No playback route switching is added.
+existing settings/recovery requirements. Only
+[automatic route recovery](#automatic-route-recovery) changes a feed's route
+during playback.
 
 Play rechecks each READY live feed's current window after provider-player
 isolation. A live position that is missing or outside that window retires only
@@ -157,8 +159,9 @@ that also opens route import. Its existing heading shows startup progress,
 the effective route or exhaustion in a fixed single-line area. Startup uses an
 actual required provider read before keeping a route for the session; only
 classified transport availability failures can try another configured choice.
-Account transactions stay on their chosen route, and later playback failures
-stop rather than switching automatically. ABEMA account settings use a compact
+Account transactions stay on their chosen route. During playback, only
+[automatic route recovery](#automatic-route-recovery) moves feeds to another
+configured route. ABEMA account settings use a compact
 heading and a stable status/action row. The primary action reads Connect by email
 or Open account, fits its label and aligns right beside the status. Its normal
 visual height is 40dp, with a minimum 48dp touch target and a consistent gap before
@@ -1131,6 +1134,83 @@ and distinguish **Checking account connection…** from reading stream settings.
 Recovery retains the pair's pre-failure enabled-offset intent across simultaneous
 failures. Automatic resumption reuses the saved alignment hierarchy below;
 an explicit Back-to-live or disabled offset is not silently re-enabled.
+
+### Automatic route recovery
+
+The user approved this common UX change for all implementations on 2026-11-26
+([#271](https://github.com/altendky/tachiai/issues/271#issuecomment-7196176976)).
+It replaces the earlier rule that a playback failure stops on its startup route.
+
+- **Trigger.** A feed first spends its automatic retry burst on its current
+  route (one, three and ten seconds). Only when that burst is exhausted, and the
+  failure that exhausted it carries the startup fallback's classified route
+  availability evidence (DNS, connect, or a timeout known to precede TLS), does
+  it move. Authentication, entitlement, provider denials, any HTTP response,
+  TLS, DRM, policy and unsafe cleanup never change the route. A paused or held
+  viewer starts no switch, as with other automatic recovery.
+- **Scope.** Every feed of the same provider on the failed route moves together
+  to the same next route; feeds on another route or provider keep playing.
+  When several instances of that provider share the route, the walk considers
+  only routes each of them configures. A feed already stopped for another
+  reason, such as an ended replay, sign-in or a waiting show, keeps its own
+  message and action; its later Retry uses the group's current route. A route
+  session another feed already holds for the same configuration is shared.
+- **Choosing the next route.** The walk starts at the top of the configured
+  order and skips only the routes that failed in the current recovery pass,
+  using the startup walk's provider read and availability classification. The
+  new route is kept while it works. A minute of sustained playback, the same
+  evidence that resets the retry burst, ends the pass; a later failure walks from
+  the top again, skipping just that route, so the first choice gets another
+  chance. A new route that fails before then gets a fresh retry burst, within
+  the existing limit of six automatic attempts per ten minutes, and the pass
+  continues past it. Opening a new viewer still runs startup selection in
+  configured order.
+- **Exhausted.** When one pass finds no working route, the affected feeds stop
+  with **No configured route is working.** and **Retry**. Retry walks the whole
+  list from the top once. There is no endless cycling and never a System-network
+  or direct fallback.
+- **Messaging.** During the switch the failed pane says, for example,
+  "Tokyo 1 isn't responding. Trying Tokyo 2…", using the routes' configured
+  names and updating as the walk tries each route; its Retry is disabled. Once
+  a moved feed is ready again, a brief notice says "Now using Tokyo 2". Status
+  is unchanged; the viewer's Status panel does not list routes today.
+- **Unchanged.** Each attempt first confirms cleanup of the affected feeds'
+  old sessions. The switched-away route then closes once no other feed uses it,
+  so a route sharing its tunnel identity can start; an unconfirmed close stops
+  playback as unsafe cleanup. The previous startup scope retires, a fresh scope
+  validates the next route through the provider, and the feeds retry through the
+  existing feed recovery path, including ABEMA account readiness bound to the
+  new route. Position and alignment follow the automatic recovery rules above.
+  ABEMA's shared WebView proxy moves to the new route before its feeds retry.
+  A single configured route behaves exactly as before.
+
+Closed diagnostics name routes only by configured position, never a name,
+host, key or URL: `routeSwitch from=1 to=2 slots=A,B reason=NETWORK_FAILED`,
+`routeSwitch exhausted from=2 slots=A reason=…`, or `routeSwitch stopped …
+startup=<failure>` under the `TachiaiPrototype` tag. A Retry after exhaustion
+logs `from=NONE … reason=RETRY`.
+
+#### Debug route fault trigger
+
+Debug builds add a shell-only trigger so this recovery can be checked on a
+device without editing routes during viewing. A `ContentProvider` in the
+cached viewer's process, declared only in the debug manifest, requires `DUMP`
+and accepts only the shell or root UID; it is disabled in the local inspection
+build, and the release manifest omits it. Its main-source entry returns
+`UNAVAILABLE` unless `BuildConfig.DEBUG`.
+
+```text
+adb shell content call --uri content://net.fstab.tachiai.debug.route-fault --method fail --arg A
+adb shell content call --uri content://net.fstab.tachiai.debug.route-fault --method clear
+```
+
+`fail` queues a fault for the route feed A (or B) currently uses. The open
+viewer applies it on its next tick and logs `routeFault slot=A route=<position>
+result=APPLIED` (or `NO_ROUTE`). That viewer route then refuses new requests as
+a connection failure, and later viewer routes for the same configured route do
+too, until `clear` or the viewer process ends. Requests already in progress
+and startup validation in the main process are unaffected. Results are closed
+constants: `QUEUED`, `CLEARED`, `INVALID_REQUEST` or `UNAVAILABLE`.
 
 ### Remembered pair offsets
 

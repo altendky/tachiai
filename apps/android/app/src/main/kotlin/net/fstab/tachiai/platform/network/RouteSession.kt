@@ -17,6 +17,7 @@ import okhttp3.ConnectionPool
 import okhttp3.CookieJar
 import okhttp3.Dns
 import okhttp3.OkHttpClient
+import net.fstab.tachiai.BuildConfig
 import net.fstab.tachiai.platform.diagnostics.FailureReporter
 import net.fstab.tachiai.platform.diagnostics.FailureStage
 import net.fstab.tachiai.provider.abema.account.AbemaApprovalBrowserPolicy
@@ -94,6 +95,9 @@ internal class RouteSession private constructor(
     val hasProxyBridge get() = backend != null
     val isAbemaApprovalBridge get() = purpose == RoutePurpose.ABEMA_APPROVAL_BROWSER && hasProxyBridge
     val proxyPort: Int = backend?.proxyPort ?: 0
+    // Debug builds only (#271): a shell-triggered fault makes this route refuse
+    // new requests as an unreachable connection would. Release never sets it.
+    @Volatile internal var debugFault = false
     private val closed = AtomicBoolean()
     private val networkCleanupFailed = AtomicBoolean()
     private val networkCloseLock = Any()
@@ -122,6 +126,8 @@ internal class RouteSession private constructor(
 
     fun open(url: URL): HttpsURLConnection {
         if (closed.get()) throw IOException("Route is closed")
+        if (BuildConfig.DEBUG && debugFault) throw ProviderTransportException(ProviderTransportEvidence(
+            ProviderTransportFailure.CONNECT, ProviderTransportPhase.CONNECT, exceptionKind = ProviderTransportExceptionKind.CONNECT))
         networkEgress?.checkActive()
         require(url.protocol == "https" && url.userInfo == null && url.ref == null && url.port in listOf(-1, 443))
         when (purpose) {

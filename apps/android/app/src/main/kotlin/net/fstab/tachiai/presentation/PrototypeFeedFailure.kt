@@ -18,6 +18,10 @@ internal enum class PrototypeFailureReason(val message: String) {
     NETWORK_FAILED("A playback network request failed. Check your connection."),
     NETWORK_SECURITY_FAILED("A secure playback connection could not be established."),
     ROUTE_FAILED("The selected route could not be prepared. No System-network fallback was used."),
+    // A playback route switch (#271) retired this feed; its pane shows progress.
+    ROUTE_SWITCHING("Switching to another configured route."),
+    // One pass through the configured routes found none working (#271).
+    ROUTES_EXHAUSTED("No configured route is working. No System-network fallback was used."),
     MEDIA_BLOCKED("A media destination was blocked by this prototype's network policy."),
     MEDIA_APPROVAL_REQUIRED("A new media destination is blocked pending approval."),
     UNSUPPORTED_MEDIA("This prototype cannot play the media format or provider configuration."),

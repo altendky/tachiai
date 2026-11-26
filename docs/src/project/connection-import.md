@@ -155,10 +155,12 @@ account handoff retains the exact chosen candidate and captured pool proof;
 configuration changes reject that continuation. Accepted account actions wait
 for prior startup cleanup in the ordinary process before opening another route.
 
-After selection the startup deadline ends and the route remains sticky for the
-runtime session. A later playback failure stops; restarting creates a new scope.
-Automatic switching during playback and randomized startup remain separate
-follow-ups.
+After selection the startup deadline ends and the route remains sticky while
+it works. A later playback failure that exhausts its retry burst with route
+availability evidence starts
+[automatic route recovery](prototype-ux.md#automatic-route-recovery), a fresh
+scope that walks the configured order with the same classification.
+Randomized startup remains a separate follow-up.
 
 Worker snapshots use two bounded reads of the separately locked instance and
 profile stores. This detects observed configuration changes, but is not a

@@ -27,7 +27,9 @@ uses upstream wireguard-go's in-memory netstack, not Android `VpnService`. Origi
 end-to-end and uses normal certificate/hostname checks. No TLS interception,
 provider algorithm change, credential capture or System-network fallback is added.
 
-Provider route choices are frozen per presentation. Identical canonical profiles
+Provider route choices are frozen per presentation, except that
+[automatic route recovery](prototype-ux.md#automatic-route-recovery) can move a
+failed route's feeds to another configured route. Identical canonical profiles
 share one tunnel/bridge, including duplicate imports, to avoid competing
 WireGuard endpoints for one peer. Within each Android process, every WireGuard
 route of one key pair (playback, account checks, catalogs) also shares one

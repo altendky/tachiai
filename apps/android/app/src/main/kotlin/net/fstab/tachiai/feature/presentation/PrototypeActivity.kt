@@ -139,6 +139,17 @@ import net.fstab.tachiai.platform.network.androidProviderRouteStartup
 import net.fstab.tachiai.platform.network.captureProviderInstanceRoutePools
 import net.fstab.tachiai.platform.network.effectiveRoutePlan
 import net.fstab.tachiai.platform.network.providerStartupStatus
+import net.fstab.tachiai.platform.network.ProviderStartupFailure
+import net.fstab.tachiai.platform.network.ProviderStartupPhase
+import net.fstab.tachiai.platform.network.captureProviderRoutePool
+import net.fstab.tachiai.platform.network.routeConfigurationKey
+import net.fstab.tachiai.platform.network.androidProviderRouteSwitchStartup
+import net.fstab.tachiai.presentation.FeedRouteSlot
+import net.fstab.tachiai.presentation.FeedRouteWalk
+import net.fstab.tachiai.presentation.routeSwitchGroup
+import net.fstab.tachiai.presentation.routeSwitchMessage
+import net.fstab.tachiai.presentation.routeSwitchNotice
+import net.fstab.tachiai.presentation.routeSwitchWanted
 import net.fstab.tachiai.platform.media.NativeMixedSide
 import net.fstab.tachiai.platform.media.NativePlaybackAudioGroup
 import net.fstab.tachiai.platform.media.NativePlaybackBudget
@@ -241,6 +252,8 @@ open class PrototypeActivity : ComponentActivity() {
     private val episodeWorker = Executors.newSingleThreadExecutor()
     // A waiting channel's schedule lookups (#560) likewise never block feed checks.
     private val airingWorker = Executors.newSingleThreadExecutor()
+    // A playback route switch (#271) never blocks Watch or authorization polls.
+    private val routeSwitchWorker = Executors.newSingleThreadExecutor()
     // Separate from Watch's readiness: ensure() retires any check pending on the
     // same instance, and an episode page must not cancel Watch's account check.
     private val episodeAccountReadiness by lazy { AbemaAccountReadiness(this) }
@@ -319,6 +332,30 @@ open class PrototypeActivity : ComponentActivity() {
     private val catchUpDeadline = LongArray(2)
     private var feedRetries = List(2) { FeedRetryState() }
     private var automaticRecovery = List(2) { FeedAutoRecoveryState() }
+    // Automatic playback route recovery (#271). Main-thread state; the worker
+    // reads only the immutable switch record and its cancellation flag.
+    private class RouteSwitch(val key: String, val service: PrototypeService, val slots: List<Int>,
+        val instances: List<String>, val previous: Map<String, ProviderEffectiveRoute>, val from: String?,
+        val fromOrdinal: Int?, val skip: Set<String>, val reason: String, val run: Long,
+        val owned: CachedViewerCleanupCoordinator.Run, val manual: Boolean, val deadline: Long) {
+        val cancelled = AtomicBoolean()
+        var connecting = false
+        var trying: String? = null
+    }
+    private class ExhaustedRoutes(val key: String, val service: PrototypeService, val slots: List<Int>,
+        val instances: List<String>, val previous: Map<String, ProviderEffectiveRoute>)
+    private class RouteTry(val from: String?, val to: String)
+    private sealed interface RouteSwitchOutcome {
+        class Ready(val owners: Map<String, ProviderEffectiveRoute>, val routes: Map<String, RouteSession>) : RouteSwitchOutcome
+        data object Exhausted : RouteSwitchOutcome
+        class Stopped(val reason: ProviderStartupFailure) : RouteSwitchOutcome
+    }
+    private class RouteSwitchResult(val closed: List<Pair<RouteSession, Boolean>>, val outcome: RouteSwitchOutcome)
+    private var routeSwitch: RouteSwitch? = null
+    private val pendingRouteSwitches = mutableListOf<Int>()
+    private val routeTries = arrayOfNulls<RouteTry>(2)
+    private val exhaustedRoutes = arrayOfNulls<ExhaustedRoutes>(2)
+    private val routeWalk = FeedRouteWalk()
     // A feed whose show isn't live yet, or whose live show ended, waits and
     // rechecks (#587). Its checks are ordinary feed retries.
     private var waiting = List(2) { FeedWaitingState() }
@@ -1033,8 +1070,10 @@ open class PrototypeActivity : ComponentActivity() {
                 viewer?.refresh()
                 return
             }
+            applyDebugRouteFaults()
             processAutomaticRecovery()
             processWaitingChecks()
+            processRouteSwitch()
             processFeedRetries(currentBudget)
             if (budget !== currentBudget) return
             sessions.forEachIndexed { index, host ->
@@ -1053,6 +1092,7 @@ open class PrototypeActivity : ComponentActivity() {
                     failFeed(index, PrototypeFeedFailure(PrototypeFailureReason.PLAYER_FAILED))
                 }
             }
+            processRouteNotices()
             updateProgress()
             timingEvidenceRequest?.let { evidence ->
                 if (playback?.pair === evidence.pair && evidence.pair.busy) {
@@ -1166,7 +1206,9 @@ open class PrototypeActivity : ComponentActivity() {
             volumeRequest = { side, volume -> playback?.setVolume(side, volume) == true },
             feedMessage = { side ->
                 val index = side.ordinal
-                if (retryAccountCheck?.index == index)
+                val routeMessage = routeSwitchPaneMessage(index)
+                if (routeMessage != null) routeMessage
+                else if (retryAccountCheck?.index == index)
                     (if (retryAccountCheck?.renewing == true) ABEMA_ACCOUNT_RENEWING_MESSAGE else ABEMA_ACCOUNT_CHECKING_MESSAGE)
                 // A waiting feed keeps its waiting text through its own checks.
                 else if (waiting[index].active && canRetryFeed(index)) waiting[index].let {
@@ -1193,7 +1235,9 @@ open class PrototypeActivity : ComponentActivity() {
                         ?.let { "Resuming at ${formatPlaybackTime(it)}…" } ?: "Preparing this feed…" else null
             }, feedRecovery = { side ->
                 val index = side.ordinal
-                if (waiting[index].active && canRetryFeed(index))
+                if (routeSwitch?.slots?.contains(index) == true || index in pendingRouteSwitches)
+                    ViewerFeedRecovery("Retrying…", false)
+                else if (waiting[index].active && canRetryFeed(index))
                     ViewerFeedRecovery(FeedRecoveryAction.CHECK_NOW.label, !feedRetries[index].retrying)
                 else failures[index]?.recoveryAction()?.takeIf { canRetryFeed(index) }?.let {
                     ViewerFeedRecovery(it.label, !feedRetries[index].retrying)
@@ -2099,8 +2143,9 @@ open class PrototypeActivity : ComponentActivity() {
         if (waitingNow) refreshAiring(index)
         // Waiting is not a recovery incident: its checks spend no automatic retries.
         if (waitingNow) automaticRecovery[index].cancel()
+        val transport = latestFeedTransport(index, snapshot, now)
         val autoDecision = if (waitingNow) FeedAutoRecoveryDecision.SKIPPED else automaticRecovery[index].failed(member, failure,
-            latestFeedTransport(index, snapshot, now),
+            transport,
             live = snapshot?.liveClock ?: (selection?.slots?.getOrNull(index)?.kind == PrototypePlaybackKind.LIVE),
             allowRecovery = canRetryFeed(index) && resumed.get() && !disposing && !explicitPlaybackHeld(),
             restoreOffset = automaticPairRestoreWanted == true,
@@ -2119,6 +2164,11 @@ open class PrototypeActivity : ComponentActivity() {
             FeedAutoRecoveryDecision.EXHAUSTED -> recordPlaybackHealth(index, PlaybackHealthReason.AUTO_RETRY_EXHAUSTED)
             FeedAutoRecoveryDecision.SKIPPED -> Unit
         }
+        // #271: only an exhausted burst of route transport failures moves the
+        // feed's route group to another configured route.
+        val switchRoute = !waitingNow && canRetryFeed(index) && !disposing &&
+            routeSwitchWanted(autoDecision, failure, transport, configuredRouteCount(index))
+        routeTries[index] = null
         failures[index] = failure
         // Play again starts an ended replay from its beginning, not its last position.
         if (failure.reason == PrototypeFailureReason.REPLAY_ENDED) feedRetries[index].forgetReplay()
@@ -2150,9 +2200,11 @@ open class PrototypeActivity : ComponentActivity() {
             }
         }
         if (NativeMixedSide.entries.all { playback?.member(it) == null }) focus?.release()
-        // A waiting feed still needs its routes for its next check.
+        if (switchRoute && !cleanupFailed && budget?.active == true) beginRouteSwitch(index)
+        // A waiting feed still needs its routes for its next check, and a
+        // route switch its run.
         if (selectedSlotIndices().all { failures[it] != null } && failures.none { it?.recoveryAction() != null } &&
-            selectedSlotIndices().none { waiting[it].active }) releaseRoutes()
+            selectedSlotIndices().none { waiting[it].active } && routeSwitch == null && pendingRouteSwitches.isEmpty()) releaseRoutes()
         updateProgress()
         viewer?.refresh()
         updateRecoveryState()
@@ -2214,10 +2266,15 @@ open class PrototypeActivity : ComponentActivity() {
 
     private fun canRetryFeed(index: Int): Boolean = useCachedAbema && !cleanupFailed &&
         budget?.active == true && cachedRun?.let(cachedCleanup::current) == true &&
-        selection?.slots?.getOrNull(index)?.instanceId?.let(routes::containsKey) == true
+        (selection?.slots?.getOrNull(index)?.instanceId?.let(routes::containsKey) == true ||
+            // A feed whose configured routes all failed (#271) retries them from the top.
+            exhaustedRoutes[index] != null && failures[index]?.reason == PrototypeFailureReason.ROUTES_EXHAUSTED)
 
     private fun requestFeedRetry(index: Int, automatic: FeedAutoRecoveryRequest? = null, waitingCheck: Boolean = false): Boolean {
         if (automatic != null && !automaticRecovery[index].current(automatic)) return false
+        if (routeSwitch?.slots?.contains(index) == true || index in pendingRouteSwitches) return false
+        if (automatic == null && !waitingCheck && failures[index]?.reason == PrototypeFailureReason.ROUTES_EXHAUSTED)
+            return retryRoutesFromTop(index)
         // A waiting check may follow a passing failure that has no user action of its own.
         if (!canRetryFeed(index) || !waitingCheck && failures[index]?.recoveryAction() == null ||
             !feedRetries[index].request()) return false
@@ -2248,6 +2305,349 @@ open class PrototypeActivity : ComponentActivity() {
         if (automatic != null) recordPlaybackHealth(index, PlaybackHealthReason.AUTO_RETRY_STARTED)
         viewer?.refresh()
         return true
+    }
+
+    // Automatic playback route recovery (#271; user decisions 2026-11-26).
+    // Feeds of one provider type on the failed route move together: each is
+    // retired with confirmed cleanup, the switched-away route closes, a fresh
+    // startup walk validates the next configured route through the provider,
+    // and the feeds retry through the existing feed recovery path.
+    private fun configuredRouteCount(index: Int): Int {
+        val source = selection?.slots?.getOrNull(index) ?: return 0
+        if (source.service == PrototypeService.YOUTUBE) return 0
+        return routeOwners[source.instanceId]?.candidateProofs?.size ?: 0
+    }
+
+    private fun routeOrdinal(owner: ProviderEffectiveRoute) = owner.candidateProofs.indexOf(owner.proof) + 1
+
+    private fun routeSlotNames(slots: List<Int>) = slots.joinToString(",") { NativeMixedSide.entries[it].name }
+
+    private fun beginRouteSwitch(index: Int) {
+        val selected = selection ?: return
+        val source = selected.slots.getOrNull(index) ?: return
+        val owner = routeOwners[source.instanceId] ?: return
+        val owned = cachedRun ?: return
+        if (routeSwitch != null) {
+            if (index !in pendingRouteSwitches) pendingRouteSwitches += index
+            viewer?.refresh(); return
+        }
+        pendingRouteSwitches.remove(index)
+        // Only playing, preparing or automatically recovering feeds move. A feed
+        // stopped for another reason (ended, sign-in, policy, waiting) keeps its
+        // own failure and user action; its later Retry uses the current route.
+        val slots = routeSwitchGroup(selected.slots.map { feed ->
+            feed?.let { routeOwners[it.instanceId]?.let { route -> FeedRouteSlot(it.service, it.instanceId, route.routeIdentity) } }
+        }, index).filter { slot -> slot == index || slot in pendingRouteSwitches ||
+            !waiting[slot].active && (failures[slot] == null || automaticRecovery[slot].pending != null ||
+                automaticRecovery[slot].automaticAttemptActive) }
+        val instances = (listOf(source.instanceId) + slots.mapNotNull { selected.slots[it]?.instanceId }).distinct()
+        val previous = instances.associateWith { checkNotNull(routeOwners[it]) }
+        startRouteSwitch(RouteSwitch(source.instanceId, source.service, slots, instances, previous, owner.choice.title,
+            routeOrdinal(owner), routeWalk.automatic(source.service.name, owner.routeIdentity),
+            failures[index]?.reason?.name ?: "UNKNOWN", epoch.get(), owned, manual = false,
+            deadline = SystemClock.elapsedRealtime() + 20_000))
+    }
+
+    // Retry after exhaustion walks the configured order from the top again.
+    private fun retryRoutesFromTop(index: Int): Boolean {
+        val record = exhaustedRoutes[index] ?: return false
+        val owned = cachedRun ?: return false
+        if (routeSwitch != null || !canRetryFeed(index)) return false
+        val slots = record.slots.filter { exhaustedRoutes[it] === record &&
+            failures[it]?.reason == PrototypeFailureReason.ROUTES_EXHAUSTED }
+        routeWalk.manual(record.service.name)
+        startRouteSwitch(RouteSwitch(record.key, record.service, slots, record.instances, record.previous, null, null,
+            emptySet(), "RETRY", epoch.get(), owned, manual = true, deadline = SystemClock.elapsedRealtime() + 20_000))
+        return true
+    }
+
+    private fun startRouteSwitch(switch: RouteSwitch) {
+        routeSwitch = switch
+        pendingRouteSwitches.removeAll(switch.slots)
+        switch.slots.forEach { if (routeSwitch === switch) retireForRouteSwitch(it) }
+        if (routeSwitch !== switch) return
+        viewer?.refresh(); updateProgress()
+        processRouteSwitch()
+    }
+
+    private fun retireForRouteSwitch(index: Int) {
+        automaticRecovery[index].cancel()
+        routeTries[index] = null; exhaustedRoutes[index] = null
+        if (retryAccountCheck?.index == index) { retryAccountCheck = null; accountReadiness.cancelCheck() }
+        // A playing sibling, or a retry already preparing, stops through the
+        // ordinary failed-slot cleanup; a queued retry is withdrawn.
+        if (failures[index] == null) failFeed(index, PrototypeFeedFailure(PrototypeFailureReason.ROUTE_SWITCHING))
+        else { feedRetries[index].invalidate(); retryPlaybackIntent.cancel(index); retryPlaybackJoins[index] = null }
+        if (selection?.slots?.getOrNull(index) != null && failures[index] != null)
+            failures[index] = PrototypeFeedFailure(PrototypeFailureReason.ROUTE_SWITCHING)
+    }
+
+    private fun processRouteSwitch() {
+        val switch = routeSwitch
+        if (switch == null) {
+            val index = pendingRouteSwitches.firstOrNull() ?: return
+            pendingRouteSwitches.removeAt(0)
+            if (failures[index] != null && canRetryFeed(index)) beginRouteSwitch(index)
+            else viewer?.refresh()
+            return
+        }
+        if (switch.connecting) return
+        if (epoch.get() != switch.run || cachedRun !== switch.owned || !cachedCleanup.current(switch.owned)) {
+            if (epoch.get() == switch.run) finishRouteSwitch(switch, RouteSwitchOutcome.Stopped(ProviderStartupFailure.CANCELLED))
+            else routeSwitch = null
+            return
+        }
+        if (!switch.slots.all { cachedCleanup.feedClosed(switch.owned, it) }) {
+            if (SystemClock.elapsedRealtime() >= switch.deadline)
+                stopToPicker("Playback cleanup could not be confirmed. Use Recovery options to restart.")
+            return
+        }
+        switch.slots.forEach { cachedCleanup.retireClosedFeed(switch.owned, it) }
+        connectRouteSwitch(switch)
+    }
+
+    private fun connectRouteSwitch(switch: RouteSwitch) {
+        val selected = selection ?: return
+        val preparation = routePreparation
+        if (preparation == null || !cachedCleanup.producing(switch.owned)) {
+            finishRouteSwitch(switch, RouteSwitchOutcome.Stopped(ProviderStartupFailure.CANCELLED)); return
+        }
+        switch.connecting = true
+        // The switched-away route closes once nothing outside the group uses it,
+        // so a new route with the same tunnel identity can start.
+        val outside = selectedSlotIndices().filter { it !in switch.slots }
+            .mapNotNull { selected.slots[it]?.instanceId?.let(routes::get) }
+        val closing = switch.instances.mapNotNull { routes[it] }.distinct().filter { route -> outside.none { it === route } }
+        val ids = switch.instances.toSet()
+        val shared = selectedSlotIndices().mapNotNull { selected.slots[it]?.instanceId }.filter { it !in ids }.distinct()
+            .mapNotNull { id -> routes[id]?.let { route ->
+                (routeProfiles[id]?.getOrNull()?.let(::routeConfigurationKey) ?: "SYSTEM") to route } }.toMap()
+        routes = routes - ids; routeOwners = routeOwners - ids; routeProfiles = routeProfiles - ids; routeChoices = routeChoices - ids
+        val oldScopes = synchronized(startupLock) {
+            startupScopes.filterKeys { it in ids }.also { startupScopes = startupScopes - ids }
+        }
+        oldScopes.forEach { (id, scope) -> ProviderStartupScopeCleanup.retire(id, scope) }
+        val reporter = diagnostics
+        fun active() = !switch.cancelled.get() && epoch.get() == switch.run && resumed.get() && !isFinishing && !isDestroyed
+        try {
+            routeSwitchWorker.execute {
+                val closed = closing.map { route -> route to reporter.cleanupAll(FailureStage.ROUTE_CLOSE) { route.close() } }
+                val outcome = if (closed.any { !it.second }) RouteSwitchOutcome.Stopped(ProviderStartupFailure.CLEANUP_UNCONFIRMED)
+                    else runCatching { connectRouteSwitchOnWorker(switch, preparation, shared, ::active) }
+                        .getOrElse { RouteSwitchOutcome.Stopped(ProviderStartupFailure.UNKNOWN) }
+                handler.post { completeRouteSwitch(switch, preparation, RouteSwitchResult(closed, outcome)) }
+            }
+        } catch (_: java.util.concurrent.RejectedExecutionException) {
+            completeRouteSwitch(switch, preparation, RouteSwitchResult(emptyList(),
+                RouteSwitchOutcome.Stopped(ProviderStartupFailure.CANCELLED)))
+        }
+    }
+
+    // Worker only. Fresh pools, a startup walk per instance with real provider
+    // validation, then this run's route sessions. No System fallback is added.
+    private fun connectRouteSwitchOnWorker(switch: RouteSwitch, preparation: RoutePreparation,
+        shared: Map<String, RouteSession>, active: () -> Boolean): RouteSwitchOutcome {
+        fun instances() = providerInstanceStore(this).read { legacyProviderSettings(this) }
+        val pools = switch.instances.associateWith { id ->
+            runCatching { captureProviderRoutePool(id, switch.service, ::instances, connectionProfileStore(this)::snapshot) }
+                .getOrNull()?.takeIf { it.proof == switch.previous[id]?.poolProof }
+                ?: return RouteSwitchOutcome.Stopped(ProviderStartupFailure.REVOKED)
+        }
+        val primary = switch.instances.first()
+        val others = switch.instances.drop(1).map { id -> pools.getValue(id).candidates.map { it.routeIdentity }.toSet() }
+        // Every feed in the group moves to one route that each instance configures.
+        val skip = switch.skip + pools.getValue(primary).candidates.map { it.routeIdentity }
+            .filter { identity -> others.any { identity !in it } }
+        val owners = linkedMapOf<String, ProviderEffectiveRoute>()
+        val registeredScopes = mutableListOf<Pair<String, ProviderRouteStartup>>()
+        fun abandon(outcome: RouteSwitchOutcome): RouteSwitchOutcome {
+            registeredScopes.forEach { (id, scope) ->
+                synchronized(startupLock) { if (startupScopes[id] === scope) startupScopes = startupScopes - id }
+                ProviderStartupScopeCleanup.retire(id, scope)
+            }
+            return outcome
+        }
+        for (id in switch.instances) {
+            val pool = pools.getValue(id)
+            val chosen = owners[primary]?.routeIdentity
+            val instanceSkip = if (chosen == null) skip else pool.candidates.map { it.routeIdentity }.filter { it != chosen }.toSet()
+            when (ProviderStartupScopeCleanup.awaitReady(id, SystemClock.elapsedRealtime() + 45_000L, active)) {
+                ProviderStartupCleanupAdmission.READY -> Unit
+                ProviderStartupCleanupAdmission.CLEANUP_UNCONFIRMED ->
+                    return abandon(RouteSwitchOutcome.Stopped(ProviderStartupFailure.CLEANUP_UNCONFIRMED))
+                else -> return abandon(RouteSwitchOutcome.Stopped(ProviderStartupFailure.CANCELLED))
+            }
+            val startup = androidProviderRouteSwitchStartup(this, pool, instanceSkip) { progress ->
+                if (id == primary && progress.phase == ProviderStartupPhase.TRYING) handler.post {
+                    if (routeSwitch === switch) { switch.trying = progress.label; viewer?.refresh() }
+                }
+            }
+            val registered = synchronized(startupLock) {
+                if (!active()) false else { startupScopes = startupScopes + (id to startup); true }
+            }
+            if (!registered) {
+                ProviderStartupScopeCleanup.retire(id, startup)
+                return abandon(RouteSwitchOutcome.Stopped(ProviderStartupFailure.CANCELLED))
+            }
+            registeredScopes += id to startup
+            val result = when (switch.service) {
+                PrototypeService.ABEMA -> prepareAndroidAbemaViewerStartup(this, startup, active)
+                PrototypeService.TWITCH -> prepareAndroidTwitchCatalogStartup(this, id, startup, active)
+                else -> startup.holdFirstForMutation()
+            }
+            when (result) {
+                is ProviderStartupResult.Ready -> owners[id] = result.owner
+                is ProviderStartupResult.HeldForMutation -> owners[id] = result.owner
+                is ProviderStartupResult.Failed -> return abandon(
+                    if (id == primary && startup.progress.exhausted) RouteSwitchOutcome.Exhausted
+                    else RouteSwitchOutcome.Stopped(result.failure.reason))
+            }
+        }
+        if (!active()) return abandon(RouteSwitchOutcome.Stopped(ProviderStartupFailure.CANCELLED))
+        val registry = RouteSessionRegistry { profile ->
+            var partial: CachedViewerRouteBackend? = null
+            shared[profile?.let(::routeConfigurationKey) ?: "SYSTEM"] ?: RouteSession.createRetained(profile, preparation, ownBackend = { backend ->
+                CachedViewerRouteBackend(backend).also {
+                    partial = it
+                    cachedCleanup.route(switch.owned, it)
+                }
+            }).also { route -> cachedCleanup.route(switch.owned, route, partial) }
+        }
+        val created = runCatching { owners.mapValues { (_, owner) -> registry.acquire(owner.profile) } }
+            .getOrElse { return abandon(RouteSwitchOutcome.Stopped(ProviderStartupFailure.UNKNOWN)) }
+        return RouteSwitchOutcome.Ready(owners, created)
+    }
+
+    private fun completeRouteSwitch(switch: RouteSwitch, preparation: RoutePreparation, result: RouteSwitchResult) {
+        result.closed.forEach { (route, confirmed) -> cachedCleanup.retireRoute(switch.owned, route, confirmed) }
+        cachedCleanup.prepared(switch.owned, preparation.cleanupConfirmed)
+        if (routeSwitch !== switch) return
+        if (epoch.get() != switch.run || cachedRun !== switch.owned || !cachedCleanup.current(switch.owned)) {
+            if (epoch.get() == switch.run) finishRouteSwitch(switch, RouteSwitchOutcome.Stopped(ProviderStartupFailure.CANCELLED))
+            else routeSwitch = null
+            return
+        }
+        val outcome = result.outcome
+        if (result.closed.any { !it.second } || !preparation.cleanupConfirmed ||
+            outcome is RouteSwitchOutcome.Stopped && outcome.reason == ProviderStartupFailure.CLEANUP_UNCONFIRMED) {
+            routeSwitch = null; cleanupFailed = true
+            stopToPicker("Route cleanup could not be confirmed. Use Recovery options to restart.")
+            return
+        }
+        if (outcome !is RouteSwitchOutcome.Ready) { finishRouteSwitch(switch, outcome); return }
+        routes = routes + outcome.routes; routeOwners = routeOwners + outcome.owners
+        routeProfiles = routeProfiles + outcome.owners.mapValues { (_, owner) -> Result.success(owner.profile) }
+        routeChoices = routeChoices + outcome.owners.mapValues { (_, owner) -> owner.choice }
+        if (BuildConfig.DEBUG) outcome.owners.forEach { (id, owner) ->
+            if (DebugRouteFaults.faulted(owner.routeIdentity)) outcome.routes[id]?.debugFault = true
+        }
+        val owner = outcome.owners.getValue(switch.key)
+        val label = owner.choice.title
+        switch.trying = label
+        Log.d("TachiaiPrototype", "routeSwitch from=${switch.fromOrdinal ?: "NONE"} to=${routeOrdinal(owner)} " +
+            "slots=${routeSlotNames(switch.slots)} reason=${switch.reason}")
+        if (switch.service != PrototypeService.ABEMA) { retryRouteSwitch(switch, label); return }
+        // ABEMA's helper WebViews share one process-wide proxy override.
+        val route = outcome.routes.getValue(switch.key)
+        cachedCleanup.proxyWillChange(switch.owned)
+        var completed = false
+        fun complete(accepted: Boolean) {
+            if (completed) return
+            completed = true
+            if (routeSwitch !== switch || epoch.get() != switch.run) return
+            if (accepted) retryRouteSwitch(switch, label)
+            else finishRouteSwitch(switch, RouteSwitchOutcome.Stopped(ProviderStartupFailure.UNKNOWN))
+        }
+        try { webRoute.install(route, ::complete, diagnostics) }
+        catch (error: Throwable) {
+            diagnostics.report(FailureStage.WEB_ROUTE_INSTALL, error)
+            complete(false)
+        }
+        handler.postDelayed({
+            if (!completed && routeSwitch === switch) diagnostics.report(FailureStage.ROUTE_INSTALL_TIMEOUT)
+            complete(false)
+        }, 3_000)
+    }
+
+    // Each feed's first attempt on the new route uses the existing retry path:
+    // fresh route-bound account readiness, preparation and playback intent.
+    private fun retryRouteSwitch(switch: RouteSwitch, label: String) {
+        routeSwitch = null
+        val now = SystemClock.elapsedRealtime()
+        switch.slots.forEach { index ->
+            if (selection?.slots?.getOrNull(index) == null || failures[index] == null) return@forEach
+            routeTries[index] = RouteTry(switch.from, label)
+            val started = if (switch.manual) requestFeedRetry(index)
+                else automaticRecovery[index].routeSwitched(automaticPairRestoreWanted == true, now)
+                    ?.let { requestFeedRetry(index, it) } == true
+            if (!started) {
+                routeTries[index] = null; failures[index] = null
+                failFeed(index, PrototypeFeedFailure(PrototypeFailureReason.ROUTE_FAILED))
+            }
+        }
+        viewer?.refresh(); updateProgress()
+    }
+
+    private fun finishRouteSwitch(switch: RouteSwitch, outcome: RouteSwitchOutcome) {
+        if (routeSwitch === switch) routeSwitch = null
+        val exhausted = outcome == RouteSwitchOutcome.Exhausted
+        Log.d("TachiaiPrototype", "routeSwitch ${if (exhausted) "exhausted" else "stopped"} " +
+            "from=${switch.fromOrdinal ?: "NONE"} slots=${routeSlotNames(switch.slots)} reason=${switch.reason}" +
+            if (outcome is RouteSwitchOutcome.Stopped) " startup=${outcome.reason.name}" else "")
+        val record = ExhaustedRoutes(switch.key, switch.service, switch.slots, switch.instances, switch.previous)
+        switch.slots.forEach { index ->
+            if (selection?.slots?.getOrNull(index) == null || failures[index] == null) return@forEach
+            failures[index] = null
+            if (exhausted) exhaustedRoutes[index] = record
+            failFeed(index, PrototypeFeedFailure(if (exhausted) PrototypeFailureReason.ROUTES_EXHAUSTED
+                else PrototypeFailureReason.ROUTE_FAILED))
+        }
+        viewer?.refresh(); updateProgress()
+    }
+
+    private fun routeSwitchPaneMessage(index: Int): String? {
+        routeSwitch?.takeIf { index in it.slots }?.let { return routeSwitchMessage(it.from, it.trying) }
+        if (index in pendingRouteSwitches)
+            return routeSwitchMessage(selection?.slots?.getOrNull(index)?.instanceId?.let(routeOwners::get)?.choice?.title, null)
+        return routeTries[index]?.takeIf { failures[index] == null || feedRetries[index].retrying }
+            ?.let { routeSwitchMessage(it.from, it.to) }
+    }
+
+    // Once a switched feed is ready again, a brief notice names its route. A
+    // minute of sustained playback ends the group's recovery pass.
+    private fun processRouteNotices() {
+        val shown = mutableSetOf<String>()
+        routeTries.forEachIndexed { index, attempt ->
+            if (attempt == null || !prepared[index] || failures[index] != null) return@forEachIndexed
+            routeTries[index] = null
+            if (shown.add(attempt.to)) viewer?.announce(routeSwitchNotice(attempt.to))
+        }
+        val now = SystemClock.elapsedRealtime()
+        selectedSlotIndices().forEach { index ->
+            if (automaticRecovery[index].sustained(now)) selection?.slots?.getOrNull(index)?.service?.name?.let(routeWalk::sustained)
+        }
+    }
+
+    // Debug builds only: apply shell-requested route faults (#271).
+    private fun applyDebugRouteFaults() {
+        if (!BuildConfig.DEBUG) return
+        val (cleared, slots) = DebugRouteFaults.take()
+        if (cleared) {
+            routes.values.forEach { it.debugFault = false }
+            Log.d("TachiaiPrototype", "routeFault cleared")
+        }
+        slots.forEach { index ->
+            val id = selection?.slots?.getOrNull(index)?.instanceId
+            val owner = id?.let(routeOwners::get)
+            val route = id?.let(routes::get)
+            val slot = NativeMixedSide.entries[index].name
+            if (owner == null || route == null) Log.d("TachiaiPrototype", "routeFault slot=$slot result=NO_ROUTE")
+            else {
+                DebugRouteFaults.fault(owner.routeIdentity)
+                route.debugFault = true
+                Log.d("TachiaiPrototype", "routeFault slot=$slot route=${routeOrdinal(owner)} result=APPLIED")
+            }
+        }
     }
 
     private fun cancelRetryPlaybackIntent() {
@@ -2378,6 +2778,9 @@ open class PrototypeActivity : ComponentActivity() {
     }
 
     private fun dispose(retainStartups: Boolean = false) {
+        // A route switch's worker registers no startup scope after this (#271).
+        routeSwitch?.cancelled?.set(true); routeSwitch = null
+        pendingRouteSwitches.clear(); routeTries.fill(null); exhaustedRoutes.fill(null); routeWalk.clear()
         // Leaving, the background and a new viewer all save the last positions first.
         saveReplayPositions(force = true)
         replayPositionKeys = listOf(null, null); replayPositionsLoading = false; replayResumeNoticePending = false
@@ -2640,7 +3043,7 @@ open class PrototypeActivity : ComponentActivity() {
         resumed.set(false); dispose()
         // Let queued route preparation reach its cancellation/result cleanup;
         // dropping the task would strand process-wide routesPending forever.
-        pickerEpisodes.close(); episodeWorker.shutdown(); airingWorker.shutdown()
+        pickerEpisodes.close(); episodeWorker.shutdown(); airingWorker.shutdown(); routeSwitchWorker.shutdown()
         worker.shutdown()
         super.onDestroy()
     }

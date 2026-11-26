@@ -26,7 +26,8 @@ internal fun PrototypeFeedFailure.recoveryAction(): FeedRecoveryAction? {
         PrototypeFailureReason.NETWORK_FAILED, PrototypeFailureReason.NETWORK_SECURITY_FAILED, PrototypeFailureReason.PREPARATION_TIMEOUT,
         PrototypeFailureReason.LIVE_POSITION_FAILED, PrototypeFailureReason.MEDIA_NOT_FOUND,
         PrototypeFailureReason.CATALOG_RATE_LIMITED, PrototypeFailureReason.CHANNEL_NOT_AIRING,
-        PrototypeFailureReason.CHANNEL_NOT_OPEN -> FeedRecoveryAction.RETRY
+        PrototypeFailureReason.CHANNEL_NOT_OPEN, PrototypeFailureReason.ROUTE_SWITCHING,
+        PrototypeFailureReason.ROUTES_EXHAUSTED -> FeedRecoveryAction.RETRY
         PrototypeFailureReason.HTTP_REJECTED -> FeedRecoveryAction.RETRY.takeIf {
             httpStatus == 408 || httpStatus == 429 || httpStatus?.let { it in 500..599 } == true
         }

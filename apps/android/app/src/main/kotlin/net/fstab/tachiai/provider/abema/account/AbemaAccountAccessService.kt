@@ -22,6 +22,11 @@ internal object AbemaAccountAccessIpc {
     // Service to client: the acquired lease now expires later (same account).
     const val RENEWED = 10
     const val IPC_MS = 5000L
+    // A durable CHECK reads protected owner and account storage that renewal
+    // and other playback contend for (#729). The service bounds that work by
+    // CHECK_MS; the client waits CHECK_REPLY_MS from dispatch for its verdict.
+    const val CHECK_MS = 10_000L
+    const val CHECK_REPLY_MS = CHECK_MS + 2_000L
     enum class Status { ACCOUNT, GUEST, FAILURE }
     class Request(val nonce: String, val instance: String, val proof: String, val source: String,
         val deadline: Long, val playback: Boolean, val continuousPlayback: Boolean = false) {
@@ -352,7 +357,7 @@ class AbemaAccountAccessService : Service() {
             }
             val began = SystemClock.elapsedRealtime()
             val deadline = AbemaAccountAccessIpc.operationDeadline(request, began, acquired = true,
-                limitMs = AbemaAccountAccessIpc.IPC_MS) ?: run { lost("CHECK_REFUSED", "TIME_LIMIT"); busy.set(false); end(seq); return }
+                limitMs = AbemaAccountAccessIpc.CHECK_MS) ?: run { lost("CHECK_REFUSED", "TIME_LIMIT"); busy.set(false); end(seq); return }
             fun inTime() = SystemClock.elapsedRealtime().let { it >= began && it < deadline }
             worker {
                 // The first refused step, as a closed cause (#729).

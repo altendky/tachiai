@@ -760,7 +760,8 @@ The first loss in each incident is still unexplained. Closed lines under
     means the binding itself was not refused, for example a poisoned instance.
   - Detaching the last consumer is ordinary teardown and logs nothing.
 - `owner=VALIDATION_RENEWED`, logged when an acquisition follows a renewal
-  published during its validation.
+  published during its validation. `owner=DURABLE_RENEWED` is the same for a
+  held lease's durable check (see below).
 - `accountRefused selection=… route=… budget=… active=… deadline=…` under
   `TachiaiCachedAbema`, logged once per session when its account check fails.
   It shows which part of the session's own scope had lapsed.
@@ -784,6 +785,45 @@ client-only one: the retry had no cached proof to reuse.
 Capture `TachiaiAbemaAccount`, `TachiaiCachedAbema`, `TachiaiPrototype`,
 `TachiaiAbemaRenewal` and `TachiaiRouteEngine` together for the next
 reproduction.
+
+### Two named losses — 2026-11-26
+
+The diagnostics above named both losses in the next emulator incident. Two
+ABEMA feeds were playing through a `renew-job-network` renewal.
+
+**`client=LEASE_LOST cause=REPLY_TIMEOUT`.** The shared proof survived. In the
+3 s before the loss, both processes waited 250–444 ms at a time on the
+provider-instance and connection-profile store locks, which a durable check
+reads repeatedly. The client also measured its 5 s reply budget from when the
+caller *began*, including time queued behind its own earlier checks. A check
+dispatched after a long queue had little time left, and its timeout revoked a
+healthy lease.
+
+Now:
+
+- Each dispatched check has its own reply budget, counted from dispatch.
+- The service bounds a durable check at 10 s, and the client waits 12 s for
+  its verdict.
+- A caller that queued behind other checks adopts an accepted check that was
+  dispatched after it began. That check's service-side reads are no older
+  than the caller's own would be, so it stands on the same evidence, and the
+  queue no longer multiplies the work.
+- A refusal, a lost lease or an expired service bound still revokes the lease.
+
+**`owner=PROOF_REVOKED cause=DURABLE_STORE_MISMATCH`.** This came 82 ms before
+the renewal's adopted `SUCCESS`, and it revoked the proof for both feeds. A
+durable check on a held lease had read the store just before the adoption, so
+its later comparison saw a changed revision.
+
+Now, when the store has directly replaced exactly the record that check read
+with a later grant for the same account, the check repeats once against the
+renewed record. It logs `owner=DURABLE_RENEWED`. A different account, a
+rollback, Forget, or a second renewal during the repeat still revokes the
+proof.
+
+The `autoRecovery=SKIPPED` that followed was the existing one-refresh-per-
+incident budget. The feed had recovered from the first loss only 12 s
+earlier. The budget is unchanged.
 
 ## Replay resume loading — 2026-11-26
 

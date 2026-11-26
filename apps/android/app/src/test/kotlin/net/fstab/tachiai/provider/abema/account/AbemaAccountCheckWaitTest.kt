@@ -190,6 +190,54 @@ class AbemaAccountCheckWaitTest {
         } finally { Thread.interrupted() }
     }
 
+    // #729: a check that queued behind a slow one still gets its whole reply budget.
+    @Test fun timeSpentQueuedNeverShortensTheDispatchedReplyBudget() {
+        val lock = ReentrantLock()
+        val clock = ArrayDeque(listOf(1_000L, 1_090L))
+        var dispatchedAt = -1L; var budget = -1L
+        assertTrue(performAbemaAccountCheck(lock, 100, { clock.removeFirstOrNull() ?: 1_090L }, { true },
+            dispatch = { at, reply -> dispatchedAt = at; budget = reply; AbemaAccountCheckCompletion(true, false) },
+            revoke = { error("A healthy check must not revoke") }, replyMs = 12_000))
+        assertEquals(1_090L, dispatchedAt); assertEquals(12_000L, budget)
+    }
+
+    @Test fun queuedCallersAdoptAnAcceptedCheckDispatchedAfterTheyBegan() {
+        val lock = ReentrantLock(true)
+        val history = AbemaAccountCheckHistory()
+        val failure = AtomicReference<Throwable?>()
+        val firstEntered = CountDownLatch(1); val finishFirst = CountDownLatch(1)
+        val dispatched = AtomicInteger(); val revocations = AtomicInteger()
+        val results = java.util.concurrent.ConcurrentLinkedQueue<Boolean>()
+        fun attempt(block: Boolean) = performAbemaAccountCheck(lock, 2_000, ::now, { true },
+            dispatch = { _, _ ->
+                dispatched.incrementAndGet()
+                if (block) { firstEntered.countDown(); check(finishFirst.await(2, TimeUnit.SECONDS)) }
+                AbemaAccountCheckCompletion(true, false)
+            }, revoke = { revocations.incrementAndGet() }, history = history)
+        val first = worker(failure) { results += attempt(true) }
+        assertTrue(firstEntered.await(1, TimeUnit.SECONDS))
+        // Both began after the in-flight check was dispatched, so neither may adopt it.
+        val waiters = List(2) { worker(failure) { results += attempt(false) } }
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+        while (lock.queueLength < 2 && System.nanoTime() < deadline) Thread.sleep(2)
+        assertEquals(2, lock.queueLength)
+        finishFirst.countDown()
+        join(first, failure); waiters.forEach { join(it, failure) }
+        assertEquals(listOf(true, true, true), results.toList())
+        assertEquals("One of the queued callers adopts the other's later accepted check", 2, dispatched.get())
+        assertEquals(0, revocations.get())
+    }
+
+    @Test fun anAcceptedLaterCheckCannotAdmitALeaseThatIsNoLongerCurrent() {
+        val history = AbemaAccountCheckHistory()
+        val stale = history.ticket(); history.accept(history.ticket())
+        assertTrue(history.covers(stale)); assertFalse(history.covers(history.ticket()))
+        var revocations = 0
+        assertFalse(performAbemaAccountCheck(ReentrantLock(), 100, { 1_000 }, { false },
+            dispatch = { _, _ -> error("A lost lease must not dispatch") }, revoke = { revocations++ }, history = history))
+        assertEquals(1, revocations)
+    }
+
     @Test fun falseMalformedOrMisboundRepliesRemainRefusedEvenAfterACanceledWaitDrains() {
         val request = AbemaAccountAccessIpc.Request("a".repeat(32), "12345678-1234-1234-1234-123456789abc",
             "b".repeat(64), "c".repeat(64), 30000, true, true)

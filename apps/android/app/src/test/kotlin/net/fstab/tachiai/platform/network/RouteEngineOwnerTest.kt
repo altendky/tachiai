@@ -31,6 +31,24 @@ class RouteEngineOwnerTest {
     }
     private companion object {
         val security = RouteProxySecurity("synthetic_user_0001", "synthetic_password_01", "synthetic_realm_0001", "example.test")
+        // AOSP's cached-app freezer debounce, as observed on tachiai-dev (#682, #733).
+        const val FREEZER_DEBOUNCE_MS = 10_000L
+    }
+
+    @Test fun theDefaultIdleRetirementIsDueWellBeforeTheFreezer() {
+        val delays = mutableListOf<Long>()
+        val timers = mutableListOf<() -> Unit>()
+        val engine = FakeEngine()
+        val owner = RouteEngineOwner { delay, action -> delays.add(delay); timers.add(action) }
+        val a = owner.lease("config-a", "key-a", security) { engine }
+        val b = owner.lease("config-a", "key-a", security) { FakeEngine() }
+        a.close(); assertTrue(delays.isEmpty())
+        // Scheduled once, at the last close, with at least half the debounce to spare (#733).
+        b.close()
+        assertEquals(listOf(RouteEngineOwner.IDLE_MS), delays)
+        assertTrue(RouteEngineOwner.IDLE_MS in 1..FREEZER_DEBOUNCE_MS / 2)
+        timers.single()()
+        assertEquals(1, engine.closes); assertEquals(0, owner.engineCount())
     }
 
     @Test fun lifecycleLogNamesClosedEventsAndCountsOnly() {

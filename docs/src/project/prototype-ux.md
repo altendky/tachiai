@@ -1004,7 +1004,9 @@ equivalently delaying its peer. Planning compares both options and prefers more
 live-window headroom, with A retained on equal margins. It does not split a nudge
 or dispatch an alternative after an uncertain seek. When neither option fits
 because a live feed's recorded history is too short, it builds the delay
-instead ([building delay](#remembered-pair-offsets), #618).
+instead ([building delay](#remembered-pair-offsets), #618). A live feed is moved
+forward only as far as its live point, where a skip stops too (#660). Moving
+it into the last seconds before its window's end only made it stall (#707).
 
 Mark aligns a matching event. Press the first feed's Mark when an event appears
 or is heard, then the other feed's Mark when the same event happens there. The
@@ -1311,9 +1313,11 @@ implemented as follows and is not yet validated on a device:
   history it jumped back into, so the pair's offset is unchanged. A skip or
   Live then moves both feeds as usual. Back to live ends the offset anyway, so
   the held feed just plays on.
-- **Only while playing.** A paused pair can't build a delay. The request is
-  refused with "That needs more recorded history; a delay builds only while
-  both feeds play."
+- **Only while playing.** A paused pair can't build a delay. A Timing step or
+  Mark is refused with "That needs more recorded history; a delay builds only
+  while both feeds play." A saved-offset restore that needs a build waits
+  instead: it is tried again once both feeds play, and a feed recovered
+  meanwhile still restores it.
 - **Window passing the frame.** If the window's oldest point still passes the
   held frame (a segment the recorder didn't cache in time, or the 256 MB
   limit), the frame moves back to 30 s inside. The countdown grows by what was

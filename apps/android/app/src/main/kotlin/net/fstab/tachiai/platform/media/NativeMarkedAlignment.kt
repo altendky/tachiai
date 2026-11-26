@@ -29,6 +29,7 @@ internal fun nativeMarkedAlignmentPlan(a: NativeTimingSnapshot?, b: NativeTiming
         val clock = (if (live) sample.contentTimeMs else position) ?: return null
         // #618: never hold a live feed further behind live than the delay limit.
         if (live && nativeLiveDelayExceeded(sample, movement)) return null
+        if (live && nativeLiveForwardExceeded(sample, movement)) return null
         return try {
             val value = Math.addExact(position, movement)
             val clockValue = Math.addExact(clock, movement)
@@ -61,7 +62,7 @@ internal fun nativeMarkedAlignmentPlan(a: NativeTimingSnapshot?, b: NativeTiming
         val duration = sample.durationMs ?: return 0
         val clock = (if (sample.live || sample.dynamic) sample.contentTimeMs else position) ?: return 0
         if (!sample.seekable || duration <= 0 || position < 0 || position > duration || clock < 0) return 0
-        if (forward) return minOf(duration - position, Long.MAX_VALUE - clock)
+        if (forward) return minOf(duration - position, Long.MAX_VALUE - clock, nativeLiveForwardRoomMs(sample) ?: Long.MAX_VALUE)
         val recorded = minOf(position, clock)
         val limit = nativeLiveDelayRoomMs(sample) ?: return recorded
         if (limit < recorded) delayLimited = true

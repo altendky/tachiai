@@ -124,6 +124,17 @@ internal class PairOffsetSession(initialPreference: PairOffsetPreference?) {
         command = null; accepted = false; message = reason
     }
 
+    // #618: a saved-offset restore that has to build delay can't while a feed
+    // is still paused at startup. It is not attempted yet: the owner plans it
+    // again once both feeds play.
+    fun deferRestore(value: PairOffsetCommand) {
+        if (!isCurrent(value) || accepted || value.origin != PairOffsetCommandOrigin.STARTUP) return
+        command = null
+        // planStartup always names its target; planRestart's is unknown.
+        if (value.targetOffsetMs != null) startupAttempted = false else restartAttempted = false
+        message = "The saved offset will be restored once both feeds play."
+    }
+
     // #618: a Timing step while a delay builds adjusts the build (user,
     // 2026-11-25), so the pending command now requests that much more or
     // less. It becomes a manual change, saved once the build is applied.

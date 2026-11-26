@@ -54,6 +54,8 @@ import net.fstab.tachiai.presentation.replayResumeTargetMs
 import net.fstab.tachiai.platform.media.NativeMixedPair
 import net.fstab.tachiai.platform.media.NativeDelayBuildAdjustment
 import net.fstab.tachiai.platform.media.NativeDelayBuildEnd
+import net.fstab.tachiai.platform.media.NativeDelayBuildOutcome
+import net.fstab.tachiai.presentation.PairOffsetCommandOrigin
 import net.fstab.tachiai.platform.media.NativePendingSeekDiagnostic
 import net.fstab.tachiai.platform.diagnostics.TimingFailureKind
 import net.fstab.tachiai.platform.diagnostics.TimingFailureSide
@@ -297,6 +299,8 @@ open class PrototypeActivity : ComponentActivity() {
     private var timingEvidenceRequest: TimingEvidenceRequest? = null
     // The last building-delay end the pair offset session has seen (#618).
     private var handledDelayBuildEnd: NativeDelayBuildEnd? = null
+    // A saved-offset restore deferred until both feeds play (#618).
+    private var pairOffsetRestoreAwaitsPlay = false
     private var playbackIntentReason = PlaybackHealthIntent.STARTUP
     private var playbackIntentRevision = 0L
     private var lastHealthSampleMs = 0L
@@ -1492,7 +1496,7 @@ open class PrototypeActivity : ComponentActivity() {
         val identity = PairOffsetIdentity.forSelection(selected)
         pairOffsetIdentity = identity; pairOffsetSession = null; pairOffsetOwner = null
         pairOffsetLoading = true; pairOffsetReadFailed = false; pairOffsetSaveId = null
-        pairOffsetSkipStartup = false; pairOffsetBaselineLost = false
+        pairOffsetSkipStartup = false; pairOffsetBaselineLost = false; pairOffsetRestoreAwaitsPlay = false
         pairOffsetRetryEstimate = PairOffsetRetryEstimate()
         pairOffsetDeviation = PairOffsetDeviationGuard()
         worker.execute {
@@ -1602,6 +1606,8 @@ open class PrototypeActivity : ComponentActivity() {
         if (!allowStartup || !desiredPlaying || !resumed.get() || budget?.active != true ||
             pair.busy || state.state.busy || !prepared.all { it } || failures.any { it != null }) return
         if (values.any { it == null || it.state != Player.STATE_READY || it.playingAd }) return
+        // A restore deferred because it has to build delay waits for both to play (#618).
+        if (pairOffsetRestoreAwaitsPlay && !values.all { it?.playing == true && it.playWhenReady }) return
         val correction = timeline.correctionMs
         if (pairOffsetBaselineLost && !pairOffsetSkipStartup &&
             values.all { it?.playing == true && it.playWhenReady }) {
@@ -1637,6 +1643,18 @@ open class PrototypeActivity : ComponentActivity() {
         val beforeAttempt = pair.lastTimingAttempt
         val beforeRevision = pair.lastTimingSettlement?.revision ?: 0L
         val result = playback?.alignRelative(command.deltaMs) ?: NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE)
+        pairOffsetRestoreAwaitsPlay = false
+        // #618: a saved-offset restore that needs more history than is recorded
+        // builds it, which can't start until both feeds play. Nothing moved:
+        // it is planned again then, instead of being dropped.
+        if (command.origin == PairOffsetCommandOrigin.STARTUP && result.outcome == NativeSeekOutcome.UNAVAILABLE &&
+            pair.lastTimingAttempt === beforeAttempt &&
+            pair.lastDelayBuildPlan?.outcome == NativeDelayBuildOutcome.NOT_PLAYING) {
+            state.deferRestore(command)
+            pairOffsetRestoreAwaitsPlay = true
+            Log.d("TachiaiPrototype", "timing=PAIR_OFFSET origin=${command.origin} deltaMs=${command.deltaMs} outcome=DEFERRED_UNTIL_PLAYING")
+            return
+        }
         if (result.outcome in setOf(NativeSeekOutcome.REQUESTED, NativeSeekOutcome.NO_CHANGE) ||
             pair.lastTimingAttempt !== beforeAttempt) pairOffsetRetryEstimate.clear()
         if (pair.lastTimingAttempt !== beforeAttempt)
@@ -2072,8 +2090,11 @@ open class PrototypeActivity : ComponentActivity() {
         val offset = pairOffsetSession?.state
         // Capture once before either failed member invalidates the shared pair.
         // The second failure must not turn the first receipt's active offset off.
+        // A saved offset still waiting to be restored, or still building its
+        // delay (#618), counts as wanted too.
         if (automaticPairRestoreWanted == null)
-            automaticPairRestoreWanted = offset?.preference?.enabled == true && offset.enabledApplied
+            automaticPairRestoreWanted = offset?.preference?.enabled == true && (offset.enabledApplied ||
+                pairOffsetRestoreAwaitsPlay || offset.busy && playback?.pair?.delayBuild != null)
         val waitingNow = updateWaiting(index, failure, now, transientAccountReadiness)
         if (waitingNow) refreshAiring(index)
         // Waiting is not a recovery incident: its checks spend no automatic retries.

@@ -308,6 +308,85 @@ class NativeDelayBuildTest {
         assertEquals(3, run(40_000).b.seeks.size)
     }
 
+    // #707 on the emulator: steps of Advance A · 5 s alternated between B back
+    // and A forward into the 8 s between A's live point and its window end. A
+    // then stalled, and the next step was refused as UNAVAILABLE instead of
+    // building. A live feed now moves forward only up to its live point, as a
+    // skip does, so the steps use B's history and then build.
+    @Test fun advanceStepsUseHistoryThenBuildAndNeverPushALiveFeedPastItsLivePoint() {
+        val fixture = Fixture(historyB = 18_000) // B has 10 s behind it.
+        val sa = fixture.a.timingSnapshot()
+        // A is at its live point with 8 s of window beyond it.
+        assertEquals(0L, nativeLiveForwardRoomMs(sa))
+        assertEquals(8_000L, checkNotNull(sa.durationMs) - checkNotNull(sa.positionMs))
+        assertTrue(nativeLiveForwardExceeded(sa, 5_000))
+        // Two ordinary steps move B back within its history; A never moves.
+        for (expected in listOf(5_000L, 0L)) {
+            assertEquals(NativeSeekOutcome.REQUESTED, fixture.pair.shiftRelative(5_000).outcome)
+            assertEquals(B, fixture.pair.lastRelativePlan?.side)
+            fixture.pair.poll()
+            assertFalse(fixture.pair.busy)
+            assertEquals(expected, fixture.b.timingSnapshot().positionMs)
+        }
+        assertTrue(fixture.a.seeks.isEmpty())
+        // The next step has no history left: it builds 5 s.
+        assertEquals(NativeSeekOutcome.REQUESTED, fixture.pair.shiftRelative(5_000).outcome)
+        assertEquals(NativeDelayBuildOutcome.BUILD, fixture.pair.lastDelayBuildPlan?.outcome)
+        assertEquals(NativeDelayBuildState(B, 5_000, 5_000), fixture.pair.delayBuild)
+        assertTrue(fixture.a.seeks.isEmpty())
+    }
+
+    @Test fun aRequestPartlyBeyondTheHoldMarginJumpsWhatItCanAndBuildsTheRest() {
+        // B has 40 s behind it, 10 s of it beyond the 30 s hold margin.
+        val fixture = Fixture(historyB = 48_000)
+        assertEquals(NativeSeekOutcome.REQUESTED, fixture.pair.shiftRelative(60_000).outcome)
+        assertEquals(listOf(DELAY_BUILD_HOLD_MARGIN_MS), fixture.b.seeks)
+        assertEquals(NativeDelayBuildState(B, 50_000, 60_000), fixture.pair.delayBuild)
+        // Inside the margin there is nothing to jump: all of it is built.
+        val inside = Fixture(historyB = 30_000) // 22 s behind B.
+        assertEquals(NativeSeekOutcome.REQUESTED, inside.pair.shiftRelative(60_000).outcome)
+        assertTrue(inside.b.seeks.isEmpty())
+        assertEquals(NativeDelayBuildState(B, 60_000, 60_000), inside.pair.delayBuild)
+    }
+
+    // #707 on the emulator: a restore tried while one feed was still paused at
+    // startup was refused and never tried again. Nothing moves, the pair says
+    // why, and the session lets the owner plan it again once both play.
+    @Test fun aStartupRestoreThatMustBuildWaitsForBothFeedsToPlay() {
+        val fixture = Fixture()
+        fixture.b.setTimingPlaying(false)
+        val attempt = fixture.pair.lastTimingAttempt
+        assertEquals(NativeSeekOutcome.UNAVAILABLE, fixture.pair.alignRelative(90_000).outcome)
+        assertEquals(NativeDelayBuildOutcome.NOT_PLAYING, fixture.pair.lastDelayBuildPlan?.outcome)
+        assertTrue(fixture.pair.lastTimingAttempt === attempt) // Nothing was dispatched.
+        assertTrue(fixture.a.seeks.isEmpty() && fixture.b.seeks.isEmpty())
+
+        val token = fixture.pair
+        val session = PairOffsetSession(PairOffsetPreference(90_000, true)); session.bind(token)
+        val first = checkNotNull(session.planStartup(token, 0))
+        session.deferRestore(first)
+        assertFalse(session.state.busy)
+        assertEquals("The saved offset will be restored once both feeds play.", session.state.message)
+        // Both feeds play: the same restore is planned again and builds.
+        fixture.b.setTimingPlaying(true)
+        val again = checkNotNull(session.planStartup(token, 0))
+        assertEquals(90_000L, again.deltaMs)
+        assertEquals(NativeSeekOutcome.REQUESTED, fixture.pair.alignRelative(again.deltaMs).outcome)
+        assertEquals(B, fixture.pair.delayBuild?.side)
+        session.dispatched(again, NativeSeekOutcome.REQUESTED)
+        // An accepted command is never deferred.
+        session.deferRestore(again)
+        assertTrue(session.state.busy)
+        // A deferred restart (after a feed was replaced) is planned again too.
+
+        val restart = PairOffsetSession(PairOffsetPreference(90_000, true)); restart.bind(token); restart.bind(Any())
+        val token2 = Any(); restart.bind(token2)
+        val retry = checkNotNull(restart.planRestart(token2, 0, null))
+        assertNull(restart.planRestart(token2, 0, null))
+        restart.deferRestore(retry)
+        assertNotNull(restart.planRestart(token2, 0, null))
+    }
+
     // User, 2026-11-25: same-direction steps add, opposite steps reduce.
     @Test fun aTimingStepThatHoldsTheFeedFurtherBehindAddsToTheBuild() {
         val fixture = Fixture()

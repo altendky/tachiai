@@ -20,9 +20,14 @@ import java.util.concurrent.RejectedExecutionException
 internal class NativeLiveSegmentCache(
     private val maxBytes: Long = LIVE_REWIND_MAX_BYTES,
     // A segment this close to leaving the provider's window is fetched by the
-    // cache if the player has not fetched it yet (at most half the window).
+    // cache if the player has not fetched it yet. A short window (Twitch's
+    // ~30 s) is recorded once a segment is a quarter of the window old, so a
+    // player near live has fetched it already and the queue has the rest of
+    // the window to catch up.
     private val recordMarginMs: Long = 30_000,
-    private val executor: ExecutorService = Executors.newSingleThreadExecutor { task ->
+    // Two recordings at a time, so one slow response does not hold the queue
+    // past a short window.
+    private val executor: ExecutorService = Executors.newFixedThreadPool(RECORDING_THREADS) { task ->
         Thread(task, "native-live-segment-cache").apply { isDaemon = true }
     },
 ) : AutoCloseable {
@@ -33,6 +38,8 @@ internal class NativeLiveSegmentCache(
         val periodKey: String, val adaptationIndex: Int, val track: Int,
         val representationId: String, val bandwidth: Int,
         val startUs: Long, val absoluteStartMs: Long, val absoluteEndMs: Long, val initialization: Boolean,
+        // HLS media sequence number, shared by every rendition; -1 for DASH.
+        val sequence: Long = -1,
     )
 
     // A read of a cached body. Close it when done; an evicted body is freed
@@ -63,7 +70,9 @@ internal class NativeLiveSegmentCache(
     private val refreshedRendition = HashMap<Int, String>()
     // Closed counters for diagnostics; no identifiers.
     private var recordedCount = 0L
-    private var recordFailures = 0L
+    private var recordSkipped = 0L
+    private var recordFetchFailed = 0L
+    private var recordNotStored = 0L
     private var evictedByHorizon = 0L
     private var evictedByBytes = 0L
     private var newestEndMs = Long.MIN_VALUE
@@ -75,13 +84,19 @@ internal class NativeLiveSegmentCache(
 
     val bytes: Long get() = synchronized(lock) { storedBytes }
 
+    // Recording outcomes: recorded; skipped because the segment was no longer
+    // declared when its turn came; the fetch failed (network, HTTP, admission
+    // or cancellation); or it completed but was not kept (no longer declared,
+    // evicted on arrival, or an incomplete body).
     internal data class Diagnostics(val bytes: Long, val bodies: Int, val spanMs: Long, val behindLiveMs: Long,
-        val recorded: Long, val recordFailures: Long, val evictedByHorizon: Long, val evictedByBytes: Long, val inFlight: Int)
+        val recorded: Long, val recordSkipped: Long, val recordFetchFailed: Long, val recordNotStored: Long,
+        val evictedByHorizon: Long, val evictedByBytes: Long, val inFlight: Int)
 
     // Counts and sizes only, for closed diagnostics.
     fun diagnostics(): Diagnostics = synchronized(lock) {
         Diagnostics(storedBytes, bodies.size, liveRewindSpanMs(providerWindowMs, behindLiveMs), behindLiveMs,
-            recordedCount, recordFailures, evictedByHorizon, evictedByBytes, inFlight.size)
+            recordedCount, recordSkipped, recordFetchFailed, recordNotStored, evictedByHorizon, evictedByBytes,
+            inFlight.size)
     }
 
     // The player supplies its own bounded, policy-checked media transport.
@@ -253,9 +268,16 @@ internal class NativeLiveSegmentCache(
         if (fetcher == null || newestEndMs == Long.MIN_VALUE) return emptyList()
         // #618 startup backfill: the provider's window behind the starting
         // point is recorded too, each segment just before it would leave.
-        val due = newestEndMs - providerWindowMs + minOf(recordMarginMs, providerWindowMs / 2)
+        val due = newestEndMs - providerWindowMs + minOf(recordMarginMs, providerWindowMs * 3 / 4)
+        // HLS renditions share media sequence numbers, and the playlist lists
+        // a segment recorded in any rendition. One recording per sequence:
+        // while adaptive selection alternates between variants, recording
+        // each one's copy would double the work and let both fall behind.
+        val covered = HashSet<Long>()
+        for ((uri, segment) in declared) if (segment.sequence >= 0 && (uri in bodies || uri in inFlight))
+            covered += segment.sequence
         return declared.entries.filter { (uri, segment) ->
-            uri !in bodies && uri !in inFlight &&
+            uri !in bodies && uri !in inFlight && (segment.sequence < 0 || segment.sequence !in covered) &&
                 renditionLocked(segment.periodKey, segment.adaptationIndex) == segment.representationId &&
                 (segment.initialization || segment.absoluteEndMs <= due)
         }.sortedBy { it.value.absoluteStartMs }.map { it.key }.onEach { inFlight.add(it) }
@@ -264,14 +286,20 @@ internal class NativeLiveSegmentCache(
     private fun schedule(uri: URI) {
         try {
             executor.execute {
+                var skipped = false
                 var failed = false
                 // A segment that left the manifest while queued is no longer
                 // declared media: don't even ask for it (#618).
-                try { if (!closed && accepts(uri)) fetcher?.invoke(uri) }
+                try { if (!closed && accepts(uri)) fetcher?.invoke(uri) else skipped = true }
                 catch (_: Exception) { failed = true /* A missed recording only narrows the window. */ }
                 finally { synchronized(lock) {
                     inFlight.remove(uri)
-                    if (failed || uri !in bodies) recordFailures++ else recordedCount++
+                    when {
+                        uri in bodies -> recordedCount++
+                        skipped -> recordSkipped++
+                        failed -> recordFetchFailed++
+                        else -> recordNotStored++
+                    }
                 } }
             }
         } catch (_: RejectedExecutionException) { synchronized(lock) { inFlight.remove(uri) } }
@@ -279,3 +307,4 @@ internal class NativeLiveSegmentCache(
 }
 
 private const val RECORDED_RENDITION_MARGIN_MS = 10_000L
+private const val RECORDING_THREADS = 2

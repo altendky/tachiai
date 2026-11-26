@@ -152,13 +152,13 @@ class NativeHlsLiveRecorderTest {
         cache.attach { fetched += it }
         // The refreshed playlist is the rendition the player follows, even
         // before (or instead of) its own segment requests naming it. A 30 s
-        // window: segments within 15 s of leaving it are recorded.
+        // window: segments 7.5 s old or older are recorded.
         recorder.rewrite(playlist, text(100, 114))
-        assertEquals((100L..106).map(::segment), fetched)
+        assertEquals((100L..110).map(::segment), fetched)
         // Unrecorded segments stay due on the next refresh while declared.
         fetched.clear()
         recorder.rewrite(playlist, text(101, 115))
-        assertEquals((101L..107).map(::segment), fetched)
+        assertEquals((101L..111).map(::segment), fetched)
     }
 
     @Test fun `other shapes are left unchanged`() {
@@ -263,9 +263,61 @@ class NativeHlsLiveRecorderTest {
                     window.retained + window.providerSegments >= before.retained + before.providerSegments) }
             previous = window
         }
-        assertEquals(0L, feed.cache.diagnostics().recordFailures)
+        feed.cache.diagnostics().let { assertEquals(0L, it.recordSkipped + it.recordFetchFailed + it.recordNotStored) }
         // The listed history still reaches back past the player.
         assertTrue(feed.windows.last().firstSequence <= feed.readNext)
+    }
+
+    // Runs queued recordings only when the test lets it: a recorder that can
+    // fetch at most a fixed number of segments per playlist refresh.
+    private class SlowExecutor : AbstractExecutorService() {
+        val queue = ArrayDeque<Runnable>()
+        override fun execute(command: Runnable) { queue.addLast(command) }
+        fun run(count: Int) = repeat(count) { queue.removeFirstOrNull()?.run() }
+        override fun shutdown() = Unit
+        override fun shutdownNow(): List<Runnable> = emptyList()
+        override fun isShutdown() = false
+        override fun isTerminated() = false
+        override fun awaitTermination(timeout: Long, unit: TimeUnit) = true
+    }
+
+    // The 2026-11-26 SHIELD collapse: a Twitch-like 30 s window of 2 s
+    // segments, a feed held about 70 s behind live while adaptive selection
+    // keeps refreshing two variants in turn, and a recorder that fetches one
+    // segment per refresh (real time, no faster).
+    @Test fun `a held feed keeps its history while renditions alternate and recording is slow`() {
+        val executor = SlowExecutor()
+        val cache = NativeLiveSegmentCache(executor = executor)
+        cache.attach { uri -> cache.put(uri, byteArrayOf(1)) }
+        val feed = Feed(cache, NativeHlsLiveRecorder(cache, log = {}))
+        val v3 = "https://edge.example/v3/index-live.m3u8"
+        val v4 = "https://edge.example/v4/index-live.m3u8"
+        feed.readNext = 1000
+        // Near live on v3: the player fetches its own segments.
+        for (last in 1015L..1060L) {
+            feed.refresh(v3, last - 15, last, "v3", last - 3)
+            executor.run(1)
+        }
+        // Held 70 s behind: the player reads nothing new while the selection
+        // alternates between v4 and v3 every refresh.
+        val held = 1060L - 3 - 35
+        cache.setBehindLiveMs(70_000)
+        for (last in 1061L..1160L) {
+            if (last % 2 == 0L) feed.refresh(v4, last - 15, last, "v4", null)
+            else feed.refresh(v3, last - 15, last, "v3", null)
+            cache.setBehindLiveMs(70_000 + (last - 1060) * 2_000)
+            executor.run(1)
+        }
+        // History starts at the first segment ever listed (1000) and never
+        // breaks for want of a recording.
+        for (window in feed.windows.drop(1)) {
+            assertTrue("history stopped: $window", window.stop != NativeHlsLiveRecorder.Stop.NOT_CACHED &&
+                (window.stop != NativeHlsLiveRecorder.Stop.NOT_DECLARED || window.firstSequence == 1000L))
+            assertTrue("history no longer reaches the held point: $window", window.firstSequence <= held)
+        }
+        val counts = cache.diagnostics()
+        assertEquals(0L, counts.recordSkipped + counts.recordFetchFailed + counts.recordNotStored)
+        assertTrue(counts.inFlight <= 2)
     }
 
     @Test fun `diagnostics give closed reasons and counts without urls`() {

@@ -27,12 +27,15 @@ uses upstream wireguard-go's in-memory netstack, not Android `VpnService`. Origi
 end-to-end and uses normal certificate/hostname checks. No TLS interception,
 provider algorithm change, credential capture or System-network fallback is added.
 
-Provider route choices are frozen per presentation. Identical canonical profiles
+Provider route choices are frozen per presentation, except that
+[automatic route recovery](prototype-ux.md#automatic-route-recovery) can move a
+failed route's feeds to another configured route. Identical canonical profiles
 share one tunnel/bridge, including duplicate imports, to avoid competing
 WireGuard endpoints for one peer. Within each Android process, every WireGuard
 route of one key pair (playback, account checks, catalogs) also shares one
 device: each use leases its own loopback listener, credentials and allowed
-hosts from it, and the device retires about 30 seconds after its last lease.
+hosts from it, and the device retires 5 seconds after its last lease
+([#733](https://github.com/altendky/tachiai/issues/733)).
 Another configuration with the same key waits for that retirement, and an
 unconfirmed device close blocks the key in that process rather than starting a
 second device. The playback process starts no WireGuard device of its own: it
@@ -44,6 +47,20 @@ WebView processes lease the same way (#275 stage 4); their WebView proxy
 override points at the lease's loopback listener. The approval browser waits
 up to the lease IPC deadline plus one second for its route close to be
 confirmed.
+
+The idle period is short so that retirement runs before Android's cached-app
+freezer stops the ordinary process. With none of its own screens open, that
+process is cached once the last lease binding goes, and AOSP freezes it after a
+10-second debounce. Until #733 the period was 30 seconds. On `tachiai-dev` on
+2026-11-26 the main process froze 10 s after `LEASE_CLOSED leases=0`, and
+`ENGINE_RETIRED engines=0` appeared only after `am unfreeze`, 30.005 s after
+the close; earlier the idle engine stayed for minutes, until the viewer was
+reopened. The 5-second period still covers quick reuse, such as a feed change
+or reopening the viewer within a few seconds; longer reuse was already lost to
+the freezer. The timer starts at the last lease close, before the binding
+goes. Where a device freezes sooner, the overdue retirement still runs at the
+next thaw, as before, and never beside a second device. The 5-second period
+itself has not yet been observed on a device.
 
 The renewal job's routes go through the same owner
 ([#275](https://github.com/altendky/tachiai/issues/275) stage 5), the user's
@@ -57,7 +74,7 @@ The renewal job's routes go through the same owner
   DNS and UDP use only the job's `Network`. The approval browser's lease
   request carries that `Network` and the job's deadline, so the engine still
   starts in the ordinary process. Other job leases join it. It retires as soon
-  as its last job lease closes, without the 30-second idle period, because its
+  as its last job lease closes, without the 5-second idle period, because its
   `Network` belongs to the job.
 - **An ordinary lease arrives while a job-bound engine runs:** the owner
   retires the job's engine first, which revokes the job's leases, and then

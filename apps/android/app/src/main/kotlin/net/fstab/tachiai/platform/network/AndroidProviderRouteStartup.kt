@@ -8,7 +8,12 @@ import net.fstab.tachiai.feature.connections.providerInstanceStore
 // Construction is memory-only; isCurrent is invoked only by startup workers.
 // Foreground cancellation is separate from configuration reconciliation.
 internal fun androidProviderRouteStartup(context: Context, pool: ProviderRoutePoolSnapshot,
-    onProgress: (ProviderStartupProgress) -> Unit = {}): ProviderRouteStartup {
+    onProgress: (ProviderStartupProgress) -> Unit = {}): ProviderRouteStartup =
+    androidProviderRouteSwitchStartup(context, pool, emptySet(), onProgress)
+
+// #271: a playback route switch's scope skips routes that failed in its pass.
+internal fun androidProviderRouteSwitchStartup(context: Context, pool: ProviderRoutePoolSnapshot,
+    skipRouteIdentities: Set<String>, onProgress: (ProviderStartupProgress) -> Unit = {}): ProviderRouteStartup {
     val application = context.applicationContext
     val captured = pool.configuredInstance
     val deadline = Math.addExact(SystemClock.elapsedRealtime(), 45_000L)
@@ -16,7 +21,8 @@ internal fun androidProviderRouteStartup(context: Context, pool: ProviderRoutePo
         captureProviderRoutePool(captured.id, captured.service,
             { providerInstanceStore(application).read { legacyProviderSettings(application) } },
             connectionProfileStore(application)::snapshot).proof == pool.proof
-    }, onProgress = onProgress, canPublishLocally = { !ProviderStartupScopeCleanup.isPoisoned(captured.id) })
+    }, onProgress = onProgress, canPublishLocally = { !ProviderStartupScopeCleanup.isPoisoned(captured.id) },
+        skipRouteIdentities = skipRouteIdentities)
 }
 
 internal fun providerStartupStatus(progress: ProviderStartupProgress): String = when (progress.phase) {

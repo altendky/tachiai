@@ -132,6 +132,24 @@ class ViewerStatusNoticesTest {
         assertEquals("No playable feeds.", notices.observe("No playable feeds.", mapOf("A" to true, "B" to false)))
     }
 
+    // #271 (PR #732): "Now using <route>" stays first when the moved feed's
+    // ready transition arrives in the same refresh.
+    @Test fun heldAnnouncementLeadsGenericChangesWhileItIsShown() {
+        val notices = ViewerStatusNotices()
+        notices.observe("One feed prepared paused; press Play.", mapOf("A" to true, "B" to false), 0)
+        assertEquals("Now using Tokyo 2", notices.hold("Now using Tokyo 2", 1_000))
+        assertEquals("Now using Tokyo 2\nB ready\nPrepared paused; press Play.",
+            notices.observe("Prepared paused; press Play.", mapOf("A" to true, "B" to true), 1_000))
+        // No new generic change keeps the shown notice as is.
+        assertNull(notices.observe("Prepared paused; press Play.", mapOf("A" to true, "B" to true), 2_000))
+        assertEquals("Now using Tokyo 2\nPlaying.", notices.observe("Playing.", mapOf("A" to true, "B" to true), 3_999))
+        // Once its display time has passed, generic changes show alone.
+        assertEquals("Paused.", notices.observe("Paused.", mapOf("A" to true, "B" to true), 4_000))
+        notices.hold("Now using Tokyo 2", 5_000); notices.reset()
+        notices.observe("Paused.", mapOf("A" to true), 5_000)
+        assertEquals("Playing.", notices.observe("Playing.", mapOf("A" to true), 5_001))
+    }
+
     @Test fun volumeWarningIsNoticedWhenItAppears() {
         val notices = ViewerStatusNotices()
         notices.observe("Paused.", emptyMap())

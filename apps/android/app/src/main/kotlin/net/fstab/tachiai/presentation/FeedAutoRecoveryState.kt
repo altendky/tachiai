@@ -274,6 +274,25 @@ internal class FeedAutoRecoveryState {
 
     fun current(request: FeedAutoRecoveryRequest): Boolean = issued === request && automaticAttemptActive
 
+    // #271: a minute of sustained progress, the same evidence that resets the
+    // consecutive burst. A route switch's recovery pass ends only then.
+    fun sustained(nowMs: Long): Boolean = healthySince?.let { nowMs - it >= HEALTHY_MS } == true
+
+    // #271: after a route switch, the feed's first attempt on the new route is
+    // an automatic attempt that spends no burst or rolling budget. If it fails,
+    // the new route gets a fresh consecutive burst, still within the rolling
+    // limit; once that is spent, the next failure is exhausted at once.
+    fun routeSwitched(restoreOffset: Boolean, nowMs: Long): FeedAutoRecoveryRequest? {
+        if (!time(nowMs)) return null
+        retire()
+        attemptCount = 0; exhausted = false
+        authorizationRefreshUsed = false
+        incidentRestoreOffset = restoreOffset
+        return FeedAutoRecoveryRequest(0, restoreOffset, nowMs).also {
+            issued = it; automaticAttemptActive = true
+        }
+    }
+
     fun cancel() {
         retire()
         attemptCount = 0; exhausted = false

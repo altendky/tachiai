@@ -358,4 +358,96 @@ class NativeCleanupReceiptTest {
         assertTrue(receipt.confirmed)
         assertEquals(1, releases)
     }
+
+    // #730: a release that finishes after Media3's timeout is confirmed late.
+    @Test fun lateReleaseHoldsAsyncConfirmationUntilItCompletes() {
+        var unconfirmed = 0
+        val receipt = NativeCleanupReceipt { unconfirmed++ }; val worker = Lane(); val owner = Lane()
+        val events = mutableListOf<String>(); val failures = mutableListOf<Throwable>(); var completed = 0
+        var resolve: ((Boolean) -> Unit)? = null
+        receipt.own(10) { events += "requests" }
+        receipt.own(30, ownerThread = true) { events += "player"; resolve = receipt.awaitLateRelease() }
+        receipt.own(40, ownerThread = true) { events += "quality" }
+        receipt.closeAsync(worker, owner, { completed++ }, failures::add)
+        worker.drain(); owner.drain()
+        assertEquals(listOf("requests", "player", "quality"), events)
+        // Every cleanup step ran, but the release has not finished yet.
+        assertTrue(receipt.pending); assertFalse(receipt.confirmed); assertEquals(0, completed)
+        assertTrue(owner.empty)
+        checkNotNull(resolve)(true)
+        assertTrue(receipt.pending); assertEquals(0, completed)
+        owner.drain()
+        assertFalse(receipt.pending); assertTrue(receipt.confirmed); assertEquals(1, completed)
+        assertTrue(failures.isEmpty()); assertEquals(0, unconfirmed)
+        // A repeated resolution is ignored.
+        checkNotNull(resolve)(false)
+        assertTrue(receipt.confirmed); assertEquals(0, unconfirmed); assertTrue(owner.empty)
+    }
+
+    @Test fun lateReleaseThatNeverCompletesStaysUnconfirmed() {
+        var unconfirmed = 0
+        val receipt = NativeCleanupReceipt { unconfirmed++ }; val worker = Lane(); val owner = Lane()
+        val failures = mutableListOf<Throwable>(); var completed = 0
+        var resolve: ((Boolean) -> Unit)? = null
+        receipt.own(30, ownerThread = true) { resolve = receipt.awaitLateRelease() }
+        receipt.closeAsync(worker, owner, { completed++ }, failures::add)
+        owner.drain()
+        assertTrue(receipt.pending); assertEquals(0, unconfirmed)
+        checkNotNull(resolve)(false)
+        // The failure is reported by the finish queued on the owner.
+        assertEquals(0, unconfirmed); assertTrue(receipt.pending)
+        owner.drain()
+        assertTrue(unconfirmed > 0)
+        assertFalse(receipt.pending); assertFalse(receipt.confirmed); assertEquals(1, completed)
+        assertTrue(failures.single() is IOException)
+        assertThrows(IOException::class.java) { receipt.close() }
+        checkNotNull(resolve)(true)
+        assertFalse(receipt.confirmed); assertEquals(1, completed)
+    }
+
+    @Test fun lateReleaseCompletedBeforeTheLastLaneDoesNotDelayConfirmation() {
+        val receipt = NativeCleanupReceipt(); val worker = Lane(); val owner = Lane()
+        val failures = mutableListOf<Throwable>(); var completed = 0
+        receipt.own(30, ownerThread = true) { checkNotNull(receipt.awaitLateRelease())(true) }
+        receipt.own(40, ownerThread = true) { }
+        receipt.closeAsync(worker, owner, { completed++ }, failures::add)
+        owner.drain()
+        assertTrue(receipt.confirmed); assertEquals(1, completed); assertTrue(failures.isEmpty())
+    }
+
+    @Test fun lateReleaseWaitsForEveryPendingRelease() {
+        val receipt = NativeCleanupReceipt(); val worker = Lane(); val owner = Lane()
+        val resolvers = mutableListOf<(Boolean) -> Unit>(); var completed = 0
+        receipt.own(30, ownerThread = true) { resolvers += checkNotNull(receipt.awaitLateRelease()) }
+        receipt.own(31, ownerThread = true) { resolvers += checkNotNull(receipt.awaitLateRelease()) }
+        receipt.closeAsync(worker, owner, { completed++ }, {})
+        owner.drain()
+        resolvers[1](true); owner.drain()
+        assertTrue(receipt.pending); assertEquals(0, completed)
+        resolvers[0](true); owner.drain()
+        assertTrue(receipt.confirmed); assertEquals(1, completed)
+    }
+
+    @Test fun lateReleaseFinishStillRunsWhenTheOwnerRefusesIt() {
+        val receipt = NativeCleanupReceipt(); val worker = Lane(); val owner = Lane()
+        val failures = mutableListOf<Throwable>(); var completed = 0
+        var resolve: ((Boolean) -> Unit)? = null
+        receipt.own(30, ownerThread = true) { resolve = receipt.awaitLateRelease() }
+        receipt.closeAsync(worker, owner, { completed++ }, failures::add)
+        owner.drain()
+        val refusal = RejectedExecutionException("Synthetic owner refusal")
+        owner.rejection = refusal
+        checkNotNull(resolve)(true)
+        assertFalse(receipt.pending); assertFalse(receipt.confirmed); assertEquals(1, completed)
+        assertSame(refusal, failures.single())
+    }
+
+    @Test fun synchronousCloseCannotWaitForALateRelease() {
+        val receipt = NativeCleanupReceipt()
+        var resolve: ((Boolean) -> Unit)? = null
+        receipt.own(30) { resolve = receipt.awaitLateRelease() }
+        receipt.close()
+        assertNull(resolve)
+        assertNull(NativeCleanupReceipt().awaitLateRelease())
+    }
 }

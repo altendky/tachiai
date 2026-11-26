@@ -6,6 +6,7 @@ import java.io.FilterInputStream
 import java.util.IdentityHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
+import java.util.concurrent.atomic.AtomicBoolean
 
 // Own resources as they are allocated, including a partially built player.
 // A released flag or repeated no-op close is not confirmation of failed cleanup.
@@ -23,6 +24,10 @@ internal class NativeCleanupReceipt(private val onUnconfirmed: () -> Unit = {}) 
     private val reservations = IdentityHashMap<Any, Action>()
     internal val retainedActionCount get() = synchronized(lock) { actions.size }
     private var asynchronous = false
+    // #730: Media3 release that reported its timeout may still finish on its
+    // playback thread. Asynchronous cleanup waits for that bounded evidence.
+    private var lateReleases = 0
+    private var deferredFinish: (() -> Unit)? = null
     val pending get() = synchronized(lock) { asynchronous }
     val confirmed get() = synchronized(lock) { state == State.CONFIRMED }
     private fun notifyFailure() { runCatching(onUnconfirmed) }
@@ -33,6 +38,26 @@ internal class NativeCleanupReceipt(private val onUnconfirmed: () -> Unit = {}) 
     // Media3 release may report timeout through its listener and still return normally.
     fun playerError(releasing: Boolean, errorCode: Int) {
         if (releasing && errorCode == NATIVE_PLAYER_RELEASE_TIMEOUT_CODE) failed()
+    }
+    // A player release that timed out waits for late completion evidence only
+    // while asynchronous cleanup is closing; confirmation stays deferred until
+    // the returned one-shot resolver reports it. Elsewhere the caller fails.
+    fun awaitLateRelease(): ((Boolean) -> Unit)? {
+        synchronized(lock) {
+            if (!asynchronous || state != State.CLOSING) return null
+            lateReleases++
+        }
+        val resolved = AtomicBoolean()
+        return { completed -> if (resolved.compareAndSet(false, true)) lateReleaseResolved(completed) }
+    }
+    // The pending finish reports a failed late release on the owner executor.
+    private fun lateReleaseResolved(completed: Boolean) {
+        val resume = synchronized(lock) {
+            if (!completed) failureObserved = true
+            lateReleases--
+            if (lateReleases == 0) deferredFinish.also { deferredFinish = null } else null
+        }
+        resume?.invoke()
     }
     // Internal Media3/timer callbacks must return so queued owner disposal can
     // run. External close still throws and rejects uncertain confirmation.
@@ -162,6 +187,13 @@ internal class NativeCleanupReceipt(private val onUnconfirmed: () -> Unit = {}) 
         }
         fun finish() {
             val error = synchronized(lock) {
+                if (lateReleases > 0) {
+                    deferredFinish = {
+                        try { owner.execute(::finish) }
+                        catch (error: Throwable) { remember(error); finish() }
+                    }
+                    return
+                }
                 if (state != State.CLOSING || failureObserved || failure != null) {
                     state = State.FAILED
                     failure ?: IOException("Native cleanup remains unconfirmed")

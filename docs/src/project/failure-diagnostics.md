@@ -40,7 +40,11 @@ Native player cleanup preserves Media3's release-timeout code 1003 as the fixed
 `PLAYER_RELEASE_TIMEOUT` category, distinct from generic receipt uncertainty.
 The app-owned projection contains no original Media3 exception, message or cause.
 The timeout is reported once, including when void-returning release completes
-normally; later cleanup stages still run and failed cleanup remains unconfirmed.
+normally; later cleanup stages still run. Since #730 the timeout alone no
+longer makes cleanup unconfirmed: asynchronous cleanup waits up to 5 s for the
+release to finish late, as described under
+[routed playback cleanup](prototype-ux.md#player-release-that-finishes-late--730).
+The `PLAYER_RELEASE_TIMEOUT` record stays in the journal either way.
 Ordinary successful release produces no failure observation.
 Only a timeout observed after the actual release begins receives this category;
 an earlier queued timeout retains generic cleanup uncertainty.
@@ -50,7 +54,11 @@ log entry with `event=PLAYER_RELEASE_TIMEOUT`, `code=1003` and numeric `elapsedM
 This measures the release call itself, excluding preceding transport cleanup;
 it is capped at 60,000 ms, with -1 for an unavailable/invalid monotonic clock.
 The duration is ephemeral log evidence, not a new persisted journal field. The
-v1 journal schema, retention, deadlines and recovery decisions are unchanged.
+v1 journal schema and retention are unchanged. When cleanup then waits for the
+late release, debug builds log `event=PLAYER_RELEASE_LATE` with
+`completed=true|false` and numeric `waitedMs` (-1 when unavailable), under the
+same tag. `completed=false` is followed by the existing unconfirmed-cleanup
+failure.
 This instrumentation does not establish that an earlier generic release failure
 was a timeout or identify why Media3 could not release.
 

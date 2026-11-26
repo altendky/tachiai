@@ -142,6 +142,27 @@ class FeedRouteRecoveryTest {
         assertEquals(emptyList<String>(), routeWalkOrder(listOf("only"), setOf("only")))
     }
 
+    @Test fun `status names each feed's route and follows a switch and Retry after exhaustion`() {
+        fun status(a: String?, b: String?) = viewerRouteStatus(listOf("A" to a, "B" to b))
+        // Playing on the first configured route; System network has no imported route.
+        assertEquals("A route: Tokyo 1\nB route: System network", status(
+            feedRouteLabel("Tokyo 1", switching = false, exhausted = false),
+            feedRouteLabel(SourceRouteChoice.system.title, switching = false, exhausted = false)))
+        // During the switch, then on the new route.
+        assertEquals("A route: switching…\nB route: System network", status(
+            feedRouteLabel(null, switching = true, exhausted = false), "System network"))
+        assertEquals("A route: Tokyo 2\nB route: System network", status(
+            feedRouteLabel("Tokyo 2", switching = false, exhausted = false), "System network"))
+        // No configured route works; Retry from the top lands on the first again.
+        assertEquals("A route: none working", status(feedRouteLabel(null, switching = false, exhausted = true), null))
+        assertEquals("A route: switching…", status(feedRouteLabel(null, switching = true, exhausted = true), null))
+        assertEquals("A route: Tokyo 1", status(feedRouteLabel("Tokyo 1", switching = false, exhausted = false), null))
+        // A feed without a route (or no selected feed) has no line.
+        assertNull(feedRouteLabel(null, switching = false, exhausted = false))
+        assertEquals("", status(null, null))
+        assertEquals("B route: Tokyo 3", status(null, "Tokyo 3"))
+    }
+
     @Test fun `pane text names the failed and tried routes and the notice names the new route`() {
         assertEquals("Tokyo 1 isn't responding. Trying Tokyo 2…", routeSwitchMessage("Tokyo 1", "Tokyo 2"))
         assertEquals("Tokyo 1 isn't responding. Trying another configured route…", routeSwitchMessage("Tokyo 1", null))

@@ -654,6 +654,14 @@ its normalized position within that range, and returns when they hide.
 
 The always-present two-line status readback is gone. Full status, including
 the requested adjustment and quality details, is in **⋯ → Playback status**.
+After the adjustment it names each selected feed's current route, one line per
+feed in the same style as the quality lines, for example `A route: Tokyo 2`.
+The name is the route's configured display name, or `System network` without an
+imported route. The line follows
+[automatic route recovery](#automatic-route-recovery) and Retry after
+exhaustion, reading `switching…` during a switch and `none working` once no
+configured route works. This is common UX for every implementation (user
+decision 2026-11-26, [#732](https://github.com/altendky/tachiai/pull/732)).
 A change shows as a brief notice centered over the video below the top bar,
 which fades after about three seconds: a new pair status, including play
 messages and the volume-request warning, or a feed becoming unavailable or
@@ -1172,8 +1180,10 @@ It replaces the earlier rule that a playback failure stops on its startup route.
 - **Messaging.** During the switch the failed pane says, for example,
   "Tokyo 1 isn't responding. Trying Tokyo 2…", using the routes' configured
   names and updating as the walk tries each route; its Retry is disabled. Once
-  a moved feed is ready again, a brief notice says "Now using Tokyo 2". Status
-  is unchanged; the viewer's Status panel does not list routes today.
+  a moved feed is ready again, a brief notice says "Now using Tokyo 2". The
+  Status panel's per-feed route line (`A route: Tokyo 2`) shows the current
+  route, `switching…` during a switch and `none working` after exhaustion, and
+  updates with each switch and Retry (user decision 2026-11-26).
 - **Unchanged.** Each attempt first confirms cleanup of the affected feeds'
   old sessions. The switched-away route then closes once no other feed uses it,
   so a route sharing its tunnel identity can start; an unconfirmed close stops

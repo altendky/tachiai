@@ -150,6 +150,7 @@ import net.fstab.tachiai.presentation.routeSwitchGroup
 import net.fstab.tachiai.presentation.routeSwitchMessage
 import net.fstab.tachiai.presentation.routeSwitchNotice
 import net.fstab.tachiai.presentation.routeSwitchWanted
+import net.fstab.tachiai.presentation.feedRouteLabel
 import net.fstab.tachiai.platform.media.NativeMixedSide
 import net.fstab.tachiai.platform.media.NativePlaybackAudioGroup
 import net.fstab.tachiai.platform.media.NativePlaybackBudget
@@ -1272,7 +1273,8 @@ open class PrototypeActivity : ComponentActivity() {
                 FrameTextFeed(ProviderTextSource(feed.service, feed.instanceId),
                     ProviderTextTranslation.settings.value.frameText(feed.instanceId), framesReadable = true)
             } },
-            selectedSlots = selectedSlotIndices().map { NativeMixedSide.entries[it] }.toSet())
+            selectedSlots = selectedSlotIndices().map { NativeMixedSide.entries[it] }.toSet(),
+            routeStatus = { side -> feedRouteStatus(side.ordinal) })
         // The Translate text in video default may have changed in Providers.
         ProviderTextTranslation.refresh(this) { if (viewer === pane) pane.refresh() }
         viewer = pane
@@ -2603,6 +2605,14 @@ open class PrototypeActivity : ComponentActivity() {
                 else PrototypeFailureReason.ROUTE_FAILED))
         }
         viewer?.refresh(); updateProgress()
+    }
+
+    // Status's route line for a feed (user decision 2026-11-26, PR #732).
+    private fun feedRouteStatus(index: Int): String? {
+        val instanceId = selection?.slots?.getOrNull(index)?.instanceId ?: return null
+        return feedRouteLabel(routeChoices[instanceId]?.title,
+            switching = routeSwitch?.slots?.contains(index) == true || index in pendingRouteSwitches,
+            exhausted = exhaustedRoutes[index] != null && failures[index]?.reason == PrototypeFailureReason.ROUTES_EXHAUSTED)
     }
 
     private fun routeSwitchPaneMessage(index: Int): String? {

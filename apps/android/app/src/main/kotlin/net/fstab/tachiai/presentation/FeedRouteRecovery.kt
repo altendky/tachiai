@@ -80,3 +80,17 @@ internal fun routeSwitchMessage(from: String?, trying: String?): String {
 
 // The brief notice once playback resumes on the new route.
 internal fun routeSwitchNotice(route: String) = "Now using $route"
+
+// Status names each feed's current route by its display name ("System network"
+// without an imported route). It follows automatic switches and Retry after
+// exhaustion (user decision 2026-11-26, PR #732).
+internal fun feedRouteLabel(route: String?, switching: Boolean, exhausted: Boolean): String? = when {
+    switching -> "switching…"
+    route != null -> route
+    exhausted -> "none working"
+    else -> null
+}
+
+// One line per selected feed, in feed order, beside the other Status lines.
+internal fun viewerRouteStatus(routes: List<Pair<String, String?>>): String =
+    routes.mapNotNull { (feed, route) -> route?.let { "$feed route: $it" } }.joinToString("\n")

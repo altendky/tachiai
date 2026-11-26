@@ -47,6 +47,7 @@ import net.fstab.tachiai.platform.media.NativeMixedSide
 import net.fstab.tachiai.platform.media.NativeQualityKind
 import net.fstab.tachiai.platform.media.NativeQualityRequest
 import net.fstab.tachiai.presentation.ViewerQualityReadback
+import net.fstab.tachiai.presentation.viewerRouteStatus
 import net.fstab.tachiai.presentation.ViewerPairOffsetReadback
 import net.fstab.tachiai.presentation.PairOffsetCorrespondence
 import net.fstab.tachiai.presentation.FloatingPosition
@@ -144,6 +145,8 @@ internal class NativePairViewer(
     // A feed's Translate text in video inputs (#664); null leaves the feature out.
     private val frameText: ((NativeMixedSide) -> FrameTextFeed?)? = null,
     selectedSlots: Set<NativeMixedSide> = NativeMixedSide.entries.toSet(),
+    // Each feed's current route name for Status; null omits its line.
+    private val routeStatus: (NativeMixedSide) -> String? = { null },
 ) : FrameLayout(context) {
     // Feed labels may change once a provider title's translation is ready (#643).
     private var labelA = labelA
@@ -1492,7 +1495,10 @@ internal class NativePairViewer(
         val quality = available.mapIndexedNotNull { index, member ->
             member?.qualitySnapshot()?.let { "${if (index == 0) "A" else "B"} quality:\n${it.details()}" }
         }.joinToString("\n")
-        details.text = "$audioWarning$playbackStatus\n$adjustment" + if (quality.isEmpty()) "" else "\n$quality"
+        val routes = viewerRouteStatus(NativeMixedSide.entries.filter { it in selectedSides }.map { side ->
+            side.name to routeStatus(side) })
+        details.text = "$audioWarning$playbackStatus\n$adjustment" + (if (routes.isEmpty()) "" else "\n$routes") +
+            if (quality.isEmpty()) "" else "\n$quality"
         details.contentDescription = "Playback status: ${details.text}"
         adjustmentLabel.text = adjustment
         adjustmentLabel.contentDescription = "$labelA relative to $labelB: $adjustment"

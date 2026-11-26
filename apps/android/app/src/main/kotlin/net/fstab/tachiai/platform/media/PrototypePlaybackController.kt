@@ -51,6 +51,8 @@ internal class PrototypePlaybackController(
             pair = NativeMixedPair(preparedA, preparedB, acquireFocus, {}, clockMs,
                 requireCurrentLiveWindowOnPlay = true,
                 initialAdjustmentValid = !coordinationLost,
+                // A joining feed waits for rejoin or Play while its sibling plays on (#737).
+                initialStatus = playingMessage().takeIf { playingRequested },
                 admission = { !closed && members().any { current -> current === it } && admission(it) })
         } else members().singleOrNull()?.let { selected ->
             recovery = NativeLiveRecovery(listOf(selected), clockMs,
@@ -177,6 +179,7 @@ internal class PrototypePlaybackController(
             return false
         }
         message = "Retried feed playback requested; existing feed left playing."
+        pair?.rejoined(message)
         return true
     }
 

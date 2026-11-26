@@ -54,6 +54,18 @@ internal fun captureAbemaCatalogRouteOwner(instanceId: String, readInstances: ()
     readProfiles: (Set<String>) -> Map<String, ConnectionProfile>, expectedProof: String? = null): AbemaCatalogRouteOwner =
     AbemaCatalogRouteOwner(captureProviderRoutePool(instanceId, PrototypeService.ABEMA, readInstances, readProfiles).resolve(expectedProof))
 
+// The stores' current owner for a captured owner's instance: the captured
+// owner itself while they still resolve to it, kept across unchanged store
+// revisions (#745), or the differing owner they now resolve to.
+internal fun abemaCatalogRouteOwnerRead(reads: ProviderRouteOwnerReads, captured: AbemaCatalogRouteOwner,
+    instanceId: String, expectedProof: String?): AbemaCatalogRouteOwner {
+    var observed: AbemaCatalogRouteOwner? = null
+    return reads.current(captured to expectedProof) { instances, profiles ->
+        captureAbemaCatalogRouteOwner(instanceId, instances, profiles, expectedProof).also { observed = it }
+            .takeIf(captured::sameOwnership)?.let { captured }
+    } ?: checkNotNull(observed)
+}
+
 // Protected owner reads run on workers, outside lifecycle locks. A successful
 // read cannot resurrect admission revoked while that read was in progress.
 internal fun abemaCatalogOwnerCurrent(canRemainActive: () -> Boolean, readOwnerMatches: () -> Boolean): Boolean =

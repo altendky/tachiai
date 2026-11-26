@@ -255,6 +255,26 @@ Logcat is not persistent. The failure journal gains only the closed
 `TRANSPORT_ROUTE_REFUSED` category, never a host. See
 [source network routing](source-network-routing.md#subsequent-native-transport-implementation).
 
+## Route owner store verdicts — #745
+
+ABEMA's account binding and per-request playback ownership still check the
+captured route owner against the provider-instance and connection-profile
+stores on every check
+([#745](https://github.com/altendky/tachiai/issues/745)). A check that matched
+keeps its verdict with a SHA-256 digest of each store's exact encrypted record.
+A later check re-reads those records under the same locks and compares digests,
+without the key or decryption. Each write uses a fresh random IV, so a committed
+change by any process changes the digest, and the next check decrypts and
+decodes again. A missing registry, a read failure, or 30 s since the last full
+read also forces a full read. The 30 s bound covers a key that became unusable
+while its record stayed unchanged.
+
+The verdict holds only the captured owner or its proof, never store plaintext,
+keys or decrypted records. The account grant store, its revision and
+renewal-successor checks, route admission, poisoning and entitlement checks are
+unchanged. The added counters carry fixed names, counts and milliseconds only;
+see [failure diagnostics](failure-diagnostics.md#owner-store-reads-per-media-request-745--2026-11-26).
+
 ## General provider integration approval — 2026-10-10
 
 The user approved general ABEMA and Twitch discovery, account/session access and

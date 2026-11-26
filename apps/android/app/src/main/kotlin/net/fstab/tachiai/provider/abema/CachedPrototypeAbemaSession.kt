@@ -72,6 +72,8 @@ import net.fstab.tachiai.presentation.PrototypeFailureReason
 import net.fstab.tachiai.provider.catalog.CatalogResource
 import net.fstab.tachiai.provider.abema.account.AndroidAbemaAccountAccessClient
 import net.fstab.tachiai.provider.abema.account.AbemaAccountAccessIpc
+import net.fstab.tachiai.provider.abema.account.AbemaAccountCheckStats
+import net.fstab.tachiai.provider.abema.account.logAbemaCheckStats
 import net.fstab.tachiai.provider.abema.account.AbemaAccountException
 import net.fstab.tachiai.provider.abema.account.AbemaAccountFailure
 import net.fstab.tachiai.provider.abema.account.AbemaSubscriptionProfileResult
@@ -310,7 +312,13 @@ internal class CachedPrototypeAbemaSession(
             receipt.current(scope, System::currentTimeMillis, SystemClock::elapsedRealtime)
     }
     private fun openConnection(url: URL): HttpsURLConnection {
-        workerRefusal()?.let { refusal ->
+        // Each media request's admission cost, as closed counters (#745).
+        val admissionStarted = SystemClock.elapsedRealtime()
+        val admission = workerRefusal()
+        AbemaAccountCheckStats.record(AbemaAccountCheckStats.media, "admission", admissionStarted,
+            SystemClock.elapsedRealtime(), admission == null)
+        logAbemaCheckStats(AbemaAccountCheckStats.media, "TachiaiCachedAbema")
+        admission?.let { refusal ->
             // A seek can interrupt this request's durable check without
             // revoking its account lease. Do not turn that into a feed failure.
             if (Thread.currentThread().isInterrupted)

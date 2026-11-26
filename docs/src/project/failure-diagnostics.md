@@ -825,6 +825,56 @@ The `autoRecovery=SKIPPED` that followed was the existing one-refresh-per-
 incident budget. The feed had recovered from the first loss only 12 s
 earlier. The budget is unchanged.
 
+### Owner store reads per media request (#745) — 2026-11-26
+
+After #744, a 35-minute emulator run with two ABEMA feeds and 13 renewals
+showed no lost lease. ART still logged 250–999 ms lock waits on
+`ConnectionProfileStore` and `ProviderInstanceStore`. They were held by
+`abema-account-access` and `abema-account` in the main process, and by
+`ExoPlayer:Loader` in the viewer.
+
+Each media request checks the route owner in the viewer, and the main process
+checks it again in the request's durable account check. Each owner check read
+both stores twice, the route pool's stability check. A durable check makes two
+owner checks, so it made eight keystore decryptions, each under the store's
+process lock and cross-process file lock.
+
+Now an owner check that matched keeps its verdict. The verdict records the
+exact encrypted record it decoded from each store. Each later check re-reads
+those records under the same locks, without a key or decryption. Every write
+uses a fresh random IV, so a committed change by any process gives a different
+record. That change, a missing registry (the legacy view), a read failure,
+or 30 s without a full read makes the next check decrypt and decode again.
+The verdict holds only the captured owner or its proof, never store plaintext.
+
+The account grant store, its revision checks and the renewal-successor rule are
+unchanged. Forget, rollback, account replacement, a route or profile change, and
+renewal adoption still take effect for the next request. The verdict is
+used by the main process's account binding (durable checks and account request
+gates) and by the viewer's per-request playback ownership checks. Other
+owner readers, such as catalogs and metadata runtimes, still read fully.
+
+Closed counters measure it. Each line covers at least a 30 s window and holds
+only fixed names, counts and milliseconds:
+
+- `media=ADMISSION_STATS … refused=… admission=… admissionMs=… admissionMaxMs=…`
+  under `TachiaiCachedAbema` (viewer): media requests and the time their
+  admission checks took.
+- `client=CHECK_STATS … dispatched=… coalesced=… refused=… check=… checkMs=… checkMaxMs=…`
+  under `TachiaiAbemaAccount` (viewer): lease checks, and whether each sent a
+  `CHECK` or adopted a later accepted one.
+- `owner=CHECK_STATS … refused=… queued=… queuedMs=… check=… checkMs=… checkMaxMs=…`
+  under `TachiaiAbemaAccount` (main): durable checks served.
+- `store=PROVIDER_INSTANCES` and `store=CONNECTION_PROFILES` under
+  `TachiaiStoreReads` (each process): `read`, `revision` and `write` lock uses,
+  each with `…Wait` (until both locks are held) and `…Hold` counts, totals
+  and maximums.
+- `routeOwner=VERDICT_STATS … hit=… full=… uncached=…` under
+  `TachiaiStoreReads`: owner checks answered from a held verdict, fully read
+  and kept, or fully read and not kept.
+
+Capture `TachiaiStoreReads` together with the tags listed above.
+
 ## Collecting one device's evidence
 
 Verify the requested device before collecting. For the persistent emulator,

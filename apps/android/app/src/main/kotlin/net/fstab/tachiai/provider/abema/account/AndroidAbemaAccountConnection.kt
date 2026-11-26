@@ -99,6 +99,10 @@ internal fun androidAbemaAccountConnectionBinding(context: Context, instanceId: 
     fun readOwner(expected: String?) = captureAbemaCatalogRouteOwner(instanceId,
         { providerInstanceStore(application).read { legacyProviderSettings(application) } },
         { connectionProfileStore(application).snapshot(it) }, expected)
+    // Every durable account check and account request gate re-checks the
+    // captured owner (#745); unchanged store revisions keep its last verdict.
+    val ownerReads = ProviderRouteOwnerReads(providerInstanceStore(application), connectionProfileStore(application),
+        { legacyProviderSettings(application) })
     return object : AbemaAccountConnectionBinding {
         override val store = store
         override fun accepted() = AndroidAbemaRenewalJobs.accepted(application)
@@ -113,7 +117,7 @@ internal fun androidAbemaAccountConnectionBinding(context: Context, instanceId: 
             return checkNotNull(captured)
         }
         override fun sameOwner(owner: AbemaCatalogRouteOwner) = routeAdmission.check({ !poisoned.get() && !ProviderStartupScopeCleanup.isPoisoned(instanceId) }) { expected ->
-            readOwner(expected).takeIf(owner::sameOwnership)?.proof()
+            abemaCatalogRouteOwnerRead(ownerReads, owner, instanceId, expected).takeIf(owner::sameOwnership)?.proof()
         }
         override fun bootstrap(owner: AbemaCatalogRouteOwner, gate: () -> Boolean, foreground: () -> Boolean): AbemaAccountBootstrap {
             // The bound renewal path uses only the remembered browser and

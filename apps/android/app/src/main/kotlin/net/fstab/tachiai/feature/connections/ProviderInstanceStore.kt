@@ -8,7 +8,11 @@ import java.io.File
 import java.util.Collections
 import java.util.UUID
 import net.fstab.tachiai.platform.storage.PRIVATE_SECRET_LIMIT
+import net.fstab.tachiai.platform.storage.PrivateSecretRevision
 import net.fstab.tachiai.platform.storage.PrivateSecretStore
+import net.fstab.tachiai.platform.storage.StoreLockKind
+import net.fstab.tachiai.platform.storage.StoreLockStats
+import net.fstab.tachiai.platform.storage.StoreLockUse
 import net.fstab.tachiai.platform.storage.processFileLocked
 import net.fstab.tachiai.presentation.*
 
@@ -28,19 +32,36 @@ internal class ProviderInstanceRegistrySnapshot internal constructor(instances: 
 internal class ProviderInstanceStore(private val store: PrivateSecretStore, private val lockFile: File? = null,
     private val mutated: () -> Unit = {}) {
     companion object { private val lock = Any() }
-    private fun <T> locked(action: () -> T): T = synchronized(lock) {
-        val file = lockFile
-        if (file == null) action() else processFileLocked(file, action)
-    }
+    private fun <T> locked(use: StoreLockUse = StoreLockUse.READ, action: () -> T): T =
+        StoreLockStats.measure(StoreLockKind.PROVIDER_INSTANCES, use, { inner -> synchronized(lock) {
+            val file = lockFile
+            if (file == null) inner() else processFileLocked(file, inner)
+        } }, action)
     fun read(legacy: () -> Map<PrototypeService, ProviderSetup>): List<ProviderInstance> = readSnapshot(legacy).instances
     fun readSnapshot(legacy: () -> Map<PrototypeService, ProviderSetup>): ProviderInstanceRegistrySnapshot =
         locked { readSnapshotUnlocked(legacy) }
 
+    // The committed registry's revision without decrypting it (#745), or null
+    // for the legacy view, whose contents span other files.
+    fun revision(): PrivateSecretRevision? = locked(StoreLockUse.REVISION) {
+        store.revision()?.takeIf { it != PrivateSecretRevision.ABSENT }
+    }
+
+    // One locked read and the revision of exactly the committed record it
+    // decoded; null revision for the legacy view or a store without revisions.
+    fun readRevisioned(legacy: () -> Map<PrototypeService, ProviderSetup>): Pair<List<ProviderInstance>, PrivateSecretRevision?> =
+        locked {
+            val read = store.readRevisioned()
+            readSnapshotUnlocked(legacy, read.plaintext).instances to
+                read.revision?.takeIf { read.plaintext != null && it != PrivateSecretRevision.ABSENT }
+        }
+
     private fun readUnlocked(legacy: () -> Map<PrototypeService, ProviderSetup>): List<ProviderInstance> =
         readSnapshotUnlocked(legacy).instances
 
-    private fun readSnapshotUnlocked(legacy: () -> Map<PrototypeService, ProviderSetup>): ProviderInstanceRegistrySnapshot {
-        val bytes = store.read() ?: return ProviderInstanceRegistrySnapshot(validate(defaultProviderInstances(legacy())), committed = false)
+    private fun readSnapshotUnlocked(legacy: () -> Map<PrototypeService, ProviderSetup>,
+        stored: ByteArray? = store.read()): ProviderInstanceRegistrySnapshot {
+        val bytes = stored ?: return ProviderInstanceRegistrySnapshot(validate(defaultProviderInstances(legacy())), committed = false)
         check(bytes.size <= PRIVATE_SECRET_LIMIT)
         val entries = DataInputStream(ByteArrayInputStream(bytes)).use { input ->
             val version = input.readInt(); check(version in 1..3)
@@ -115,7 +136,7 @@ internal class ProviderInstanceStore(private val store: PrivateSecretStore, priv
             setup = it.setup.copy(route = routes.firstOrNull(), fallbackRoutes = routes.drop(1))) else it }
     }
 
-    private fun mutate(legacy: () -> Map<PrototypeService, ProviderSetup>, update: (List<ProviderInstance>) -> List<ProviderInstance>): List<ProviderInstance> = locked {
+    private fun mutate(legacy: () -> Map<PrototypeService, ProviderSetup>, update: (List<ProviderInstance>) -> List<ProviderInstance>): List<ProviderInstance> = locked(StoreLockUse.WRITE) {
         val entries = validate(update(readUnlocked(legacy)))
         val bytes = ByteArrayOutputStream().also { output -> DataOutputStream(output).use { data ->
             data.writeInt(3); data.writeInt(entries.size)

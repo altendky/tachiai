@@ -13,8 +13,11 @@ internal class NativeMixedPair(
     private val requireCurrentLiveWindowOnPlay: Boolean = false,
     private val admission: (NativePairMember) -> Boolean = { true },
     initialAdjustmentValid: Boolean = true,
+    // A pair formed around a feed that is already playing does not claim to
+    // be paused (#737).
+    initialStatus: String? = null,
 ) : AutoCloseable {
-    var status = "Prepared paused; press Play."
+    var status = initialStatus ?: "Prepared paused; press Play."
         private set
     // Positive = A requested later relative to B, not measured synchronization.
     var requestedAdjustmentMs = 0L
@@ -214,6 +217,12 @@ internal class NativeMixedPair(
         if (!pa || !pb) { pause(); status = "Play refused; pause requested for both."; return false }
         status = resumed?.let { nativeOldestResumeNotice(it, pair = true) } ?: "Play requested; no synchronization lock."
         return true
+    }
+
+    // A retried feed joined the still-playing peer outside this pair's Play;
+    // its owner reports that transport here so the status is current (#737).
+    fun rejoined(message: String) {
+        if (!closed) status = message
     }
 
     // The last Play that moved a feed to its oldest recorded point (#618).

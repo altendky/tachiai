@@ -14,6 +14,7 @@ import net.fstab.tachiai.BuildConfig
 import net.fstab.tachiai.platform.network.*
 import net.fstab.tachiai.platform.web.configureSecureSettings
 import net.fstab.tachiai.presentation.SourceRouteMode
+import net.fstab.tachiai.provider.abema.abemaRequestedOwnerCurrent
 import net.fstab.tachiai.provider.abema.captureAbemaCatalogRouteOwner
 import net.fstab.tachiai.provider.abema.account.*
 import net.fstab.tachiai.provider.abema.account.AbemaRenewalDiagnostic.Phase
@@ -247,9 +248,13 @@ internal class AbemaApprovalBrowserRuntime(
         } catch (_: Throwable) { refuse(Phase.BROWSER_START, Reason.EXCEPTION) }
     }
 
-    private fun sameOwner() = request.ownerProof == captureAbemaCatalogRouteOwner(request.instanceId,
-        { providerInstanceStore(applicationContext).read { legacyProviderSettings(applicationContext) } },
-        { connectionProfileStore(applicationContext).snapshot(it) }, request.ownerProof).proof()
+    // The owner watch and every intercepted request re-check the requested
+    // owner (#752); unchanged store revisions keep its last matching verdict.
+    private val ownerReads by lazy {
+        ProviderRouteOwnerReads(providerInstanceStore(applicationContext), connectionProfileStore(applicationContext),
+            { legacyProviderSettings(applicationContext) })
+    }
+    private fun sameOwner() = abemaRequestedOwnerCurrent(ownerReads, request.instanceId, request.ownerProof)
     // A failed re-read is not evidence that the owner changed (#635 step 3).
     private fun ownerMismatch(): Reason? = abemaOwnerMismatch(::sameOwner)
     private fun current() = !ending && ready && active && operationCurrent() && !poisoned.get() && request.current(SystemClock.elapsedRealtime())
@@ -369,6 +374,7 @@ internal class AbemaApprovalBrowserRuntime(
             checkPending = true
             workers.execute {
                 val mismatch = ownerMismatch()
+                runCatching { ProviderRouteOwnerReads.drainStats().forEach { Log.d("TachiaiStoreReads", it) } }
                 main.post { checkPending = false; if (mismatch != null) refuse(Phase.OPERATION, mismatch) }
             }
         }

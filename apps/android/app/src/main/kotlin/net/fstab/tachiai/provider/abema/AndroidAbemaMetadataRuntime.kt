@@ -136,9 +136,14 @@ internal class AndroidAbemaMetadataEnvironment(private val context: Context) : A
         { connectionProfileStore(context).snapshot(it) }, expectedProof)
     override fun readOwner(instanceId: String): AbemaMetadataRuntimeOwner = readOwner(instanceId, null)
     override fun readOwner(instanceId: String, expectedProof: String?): AbemaMetadataRuntimeOwner = Owner(readSavedOwner(instanceId, expectedProof))
+    // Each runtime gate re-checks its owner (#752); unchanged store revisions
+    // keep the last matching verdict.
+    private val ownerReads by lazy {
+        ProviderRouteOwnerReads(providerInstanceStore(context), connectionProfileStore(context), { legacyProviderSettings(context) })
+    }
     override fun sameOwner(owner: AbemaMetadataRuntimeOwner): Boolean {
         val captured = (owner as Owner).saved
-        return captured.sameOwnership(readSavedOwner(captured.instance.id, captured.proof()))
+        return captured.sameOwnership(abemaCatalogRouteOwnerRead(ownerReads, captured, captured.instance.id, captured.proof()))
     }
     override fun newPreparation(): AbemaMetadataRuntimePreparation = Preparation(RoutePreparation(diagnostics))
     override fun prepare(owner: AbemaMetadataRuntimeOwner, request: AbemaMetadataRuntimeRequest,

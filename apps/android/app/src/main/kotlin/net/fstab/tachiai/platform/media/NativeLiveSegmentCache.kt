@@ -256,7 +256,9 @@ internal class NativeLiveSegmentCache(
         try {
             executor.execute {
                 var failed = false
-                try { if (!closed) fetcher?.invoke(uri) }
+                // A segment that left the manifest while queued is no longer
+                // declared media: don't even ask for it (#618).
+                try { if (!closed && accepts(uri)) fetcher?.invoke(uri) }
                 catch (_: Exception) { failed = true /* A missed recording only narrows the window. */ }
                 finally { synchronized(lock) {
                     inFlight.remove(uri)

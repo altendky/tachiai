@@ -177,6 +177,12 @@ What is retained:
   rendition the player is using that the cache fetches just before they leave
   the provider's window. Every request goes through the same bounded,
   allowlisted, budgeted transport as the player.
+  - A background recording that is refused or fails only narrows the window. It
+    is not reported as the feed's failure; the playback budget is the exception.
+    A segment that has left the manifest while its recording waited is not
+    requested at all. Before this, such a refusal latched `MEDIA_BLOCKED` on a
+    healthy feed, which then labeled its next failure and blocked automatic
+    recovery.
   - Bytes are kept exactly as fetched: encrypted where the provider encrypts.
   - No decryption, key handling, license exchange or DRM-session change is
     added. The one-exchange license gate is unchanged.

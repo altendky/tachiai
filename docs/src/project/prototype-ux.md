@@ -1655,6 +1655,39 @@ account expiry, exit country, acoustic output and physical TV behavior were
 not independently verified. This is a short Stop/reopen check, not sustained
 playback acceptance.
 
+### Player release that finishes late — #730
+
+On the `tachiai-dev` emulator, 2 of about 9 exits from a two-feed viewer
+logged `PLAYER_RELEASE_TIMEOUT code=1003 elapsedMs≈500` and then showed
+**Playback recovery required** (`PLAYBACK_CLEANUP_UNCONFIRMED`)
+([#730](https://github.com/altendky/tachiai/issues/730)). One exit came a few
+seconds after an automatic recovery had been scheduled for feed A.
+
+Media3's `release()` queues the release on the player's own playback thread
+and waits for it for at most 500 ms (its default release timeout). If that
+thread has not finished by then, it reports error 1003 and returns, but the
+thread keeps releasing. The cleanup receipt treated that report as a failed
+release at once, so a release that finished a moment later still blocked the
+next viewer.
+
+Asynchronous cleanup now waits up to 5 s more after a release timeout for the
+playback thread to finish. That thread ends only after it has run the queued
+release; Media3 itself counts a finished playback thread as released. If it
+finishes in time, cleanup is confirmed as usual. If it is still running at
+5 s, or the wait cannot run, cleanup stays unconfirmed and the recovery dialog
+appears as before. The viewer's 20 s cleanup deadline still applies. A
+timeout seen outside the release call, a synchronous rollback during player
+construction, and a player without its own playback thread still fail at once.
+The other cleanup steps run during the wait, which stays off the main thread.
+
+Leaving the viewer already cancels queued automatic recovery and invalidates
+pending retries before feeds are closed, so no recovery attempt can start
+afterwards. Static review found no separate race between a queued recovery and
+release. A retry that has just created a new player can still be released
+while that player is preparing, which may take longer; the late wait covers
+that case too. Why the emulator's release took longer than 500 ms was not
+established.
+
 ## Cached viewer cleanup ownership
 
 The cached viewer uses a process-owned run acquired before route preparation.
@@ -1676,7 +1709,9 @@ Native cleanup receipts own allocations before their factories can run and seal
 new allocation before teardown. Work still allocating resources cannot produce
 confirmed cleanup. Input-stream and connection close failures remain sticky;
 all other cleanup steps are still attempted. A normally returning player release
-also needs the absence of a release-time error. Session confirmation reads the
+also needs the absence of a release-time error, or, after Media3's release
+timeout, its playback thread finishing within the
+[late-release wait](#player-release-that-finishes-late--730). Session confirmation reads the
 actual receipts before releasing route ownership.
 
 Pending completion and known failure are separate states. A known cleanup

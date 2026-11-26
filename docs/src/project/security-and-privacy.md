@@ -125,8 +125,10 @@ without a separate exception:
   the translation cache for them is a separate 128-entry in-memory cache.
 - **Logs** under `TachiaiFrameText` hold only numbers and states: capture,
   recognition and translation milliseconds, block counts, the sampling interval,
-  the running state, reset causes and name-pairing geometry (counts, overlap and
-  gap ratios, pixel heights). Failures are logged without exception text.
+  the running state, reset causes, name-pairing geometry (counts, overlap and
+  gap ratios, pixel heights) and, for each discontinuity or position jump, the
+  Media3 reason, period indexes and stream positions and deltas in
+  milliseconds. Failures are logged without exception text.
 - **Unreadable frames.** A feed decoded through a secure path (for example a
   future Widevine feed) is reported as unavailable for this feed. Tachiai does
   not change surfaces, decoders or DRM to read it.

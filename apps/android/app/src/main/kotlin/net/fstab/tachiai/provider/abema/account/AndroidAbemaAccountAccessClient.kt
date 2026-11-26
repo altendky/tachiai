@@ -102,6 +102,11 @@ internal class AndroidAbemaAccountAccessClient(context: Context, instanceId: Str
                 else -> synchronized(lock) {
                     val pending = operation
                     if (pending != null && seq == pending.sequence && message.what == pending.expected && live()) {
+                        // How long the reply waited for this main looper (#752).
+                        if (message.what == AbemaAccountAccessIpc.CHECKED) runCatching {
+                            AbemaAccountCheckStats.client.time("replyHop", SystemClock.uptimeMillis() - message.`when`,
+                                SystemClock.elapsedRealtime())
+                        }
                         pending.fields = fields; pending.done.countDown()
                     }
                 }
@@ -177,12 +182,14 @@ internal class AndroidAbemaAccountAccessClient(context: Context, instanceId: Str
         return value
     }
     private fun transact(what: Int, expected: Int, waitMs: Long,
-        checkWait: ((CountDownLatch) -> Boolean)? = null): Map<String, Any>? {
+        checkWait: ((CountDownLatch) -> Boolean)? = null, sendHop: ((Long) -> Unit)? = null): Map<String, Any>? {
         val pending = synchronized(lock) {
             if (operation != null || !live() || sequence == Long.MAX_VALUE) return null
             Operation(++sequence, expected).also { operation = it }
         }
+        val posted = SystemClock.elapsedRealtime()
         main.post {
+            sendHop?.let { runCatching { it(SystemClock.elapsedRealtime() - posted) } }
             try { if (live()) connection?.send(what, pending.sequence) else pending.done.countDown() }
             catch (_: Throwable) { pending.done.countDown(); lose("SEND_FAILED"); revoked.set(true); close() }
         }
@@ -199,10 +206,15 @@ internal class AndroidAbemaAccountAccessClient(context: Context, instanceId: Str
         return performAbemaAccountCheck(checks, AbemaAccountAccessIpc.CHECK_REPLY_MS, SystemClock::elapsedRealtime, ::current,
             dispatch = { dispatched, replyMs ->
                 var interrupted = false
-                val fields = transact(AbemaAccountAccessIpc.CHECK, AbemaAccountAccessIpc.CHECKED, replyMs) { done ->
+                // Where a lease check's time goes (#752): waiting for this
+                // client's check lock, the main-looper hop before sending, and
+                // the whole dispatched exchange until its reply wakes this worker.
+                runCatching { stats.time("lockWait", dispatched - started, dispatched) }
+                val fields = transact(AbemaAccountAccessIpc.CHECK, AbemaAccountAccessIpc.CHECKED, replyMs, { done ->
                     awaitAbemaAccountCheck(done, dispatched, dispatched + replyMs,
                         SystemClock::elapsedRealtime, ::live).also { interrupted = it.interrupted }.completed
-                }
+                }, sendHop = { stats.time("sendHop", it, SystemClock.elapsedRealtime()) })
+                runCatching { SystemClock.elapsedRealtime().let { stats.time("dispatch", it - dispatched, it) } }
                 AbemaAccountCheckCompletion(abemaAccountCheckAccepted(fields, request), interrupted)
             }, revoke = { lose("CHECK_REFUSED"); revoked.set(true); close() }, history = checkHistory,
             observe = { stats.count(it.event, SystemClock.elapsedRealtime()) }).also { accepted ->

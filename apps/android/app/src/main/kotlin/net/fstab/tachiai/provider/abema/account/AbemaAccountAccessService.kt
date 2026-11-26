@@ -245,7 +245,12 @@ class AbemaAccountAccessService : Service() {
             session.sequence = sequence
             when (message.what) {
                 AbemaAccountAccessIpc.ACQUIRE -> session.acquire(sequence)
-                AbemaAccountAccessIpc.CHECK -> session.check(sequence)
+                AbemaAccountAccessIpc.CHECK -> {
+                    // How long the check waited for this main looper (#752).
+                    runCatching { AbemaAccountCheckStats.owner.time("receiveHop",
+                        SystemClock.uptimeMillis() - message.`when`, SystemClock.elapsedRealtime()) }
+                    session.check(sequence)
+                }
                 AbemaAccountAccessIpc.CLOSE -> session.end(sequence)
             }
         }
@@ -374,7 +379,9 @@ class AbemaAccountAccessService : Service() {
                 AbemaAccountCheckStats.record(AbemaAccountCheckStats.owner, "check", started,
                     SystemClock.elapsedRealtime(), refusal == "ADMITTED")
                 logAbemaCheckStats(AbemaAccountCheckStats.owner)
+                val checked = SystemClock.elapsedRealtime()
                 main.post {
+                    runCatching { SystemClock.elapsedRealtime().let { AbemaAccountCheckStats.owner.time("replyHop", it - checked, it) } }
                     busy.set(false)
                     if (ended.get()) return@post
                     val admitted = refusal == "ADMITTED" && current() && inTime()

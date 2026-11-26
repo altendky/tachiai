@@ -260,7 +260,10 @@ Logcat is not persistent. The failure journal gains only the closed
 ABEMA's account binding and per-request playback ownership still check the
 captured route owner against the provider-instance and connection-profile
 stores on every check
-([#745](https://github.com/altendky/tachiai/issues/745)). A check that matched
+([#745](https://github.com/altendky/tachiai/issues/745)). The same rule covers
+the ABEMA catalog, route startup, the approval browser, the metadata runtime and
+the Twitch catalog connection
+([#752](https://github.com/altendky/tachiai/issues/752)). A check that matched
 keeps its verdict with a SHA-256 digest of each store's exact encrypted record.
 A later check re-reads those records under the same locks and compares digests,
 without the key or decryption. Each write uses a fresh random IV, so a committed

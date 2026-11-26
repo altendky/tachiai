@@ -47,6 +47,8 @@ internal class AbemaAccountAccessOwner(
     private val transportCleanupConfirmed: (AbemaAccountTransport) -> Boolean,
     // Closed timing markers only; never account, route or response values.
     private val mark: (String) -> Unit = {},
+    // Closed first cause of a lost route admission, named when a held proof is lost (#729).
+    private val routeRefusal: () -> Any? = { null },
 ) : AutoCloseable {
     companion object {
         // A late native return cannot turn an uncertain cleanup into a success.
@@ -76,6 +78,9 @@ internal class AbemaAccountAccessOwner(
         var cancel: AbemaAccountCleanupReceipt<AbemaAccountTransport>? = null
         @Volatile var result: Proof? = null
         @Volatile var failure = AbemaAccountFailure.CANCELLED
+        // The store directly replaced this flight's record with a later grant
+        // for the same account while it validated (#729).
+        @Volatile var renewed = false
     }
     init {
         require(validProviderInstanceId(instanceId))
@@ -136,6 +141,13 @@ internal class AbemaAccountAccessOwner(
         attachments++
         Attachment(refresh)
     }
+    // A held proof's loss as one closed marker (#729): computed under the
+    // monitor, emitted outside it, and never able to affect admission.
+    private fun lossLocked(cause: String): String? =
+        if (proof == null) null else "PROOF_REVOKED cause=$cause attachments=$attachments"
+    private fun emit(marker: String?) { if (marker != null) runCatching { mark(marker) } }
+    private fun routeCause(): String = runCatching { routeRefusal()?.toString() }.getOrNull()
+        ?.takeIf { it.matches(Regex("[A-Z_]{1,32}")) } ?: "NONE"
     private fun revokeLocked(): AbemaAccountCleanupReceipt<AbemaAccountTransport>? {
         generation++; proof = null
         val pending = flight ?: return null
@@ -145,11 +157,18 @@ internal class AbemaAccountAccessOwner(
         }
     }
     fun invalidate() {
-        val cancelled = synchronized(lock) { revokeLocked() }
+        var lost: String? = null
+        val cancelled = synchronized(lock) { lost = lossLocked("INVALIDATED"); revokeLocked() }
+        emit(lost)
         cancelled?.start()
     }
-    override fun close() {
-        val cancelled = synchronized(lock) { closed = true; revokeLocked() }
+    override fun close() = close("OWNER_CLOSED")
+    // The registry retires an owner whose route admission was lost.
+    internal fun retire() = close("OWNER_RETIRED route=${routeCause()}")
+    private fun close(cause: String) {
+        var lost: String? = null
+        val cancelled = synchronized(lock) { lost = lossLocked(cause); closed = true; revokeLocked() }
+        emit(lost)
         cancelled?.start()
         notifyRetiredIdle()
     }
@@ -157,6 +176,7 @@ internal class AbemaAccountAccessOwner(
     // The proof currently standing for value's lineage, adopting the store's
     // direct same-account renewal successor in place of an obsolete revision.
     private fun currentProof(value: Proof, attachment: Attachment? = null): Proof? {
+        var lost: String? = null
         return synchronized(lock) {
             val now = wallMs()
             val held = proof?.takeIf { it.lineage === value.lineage }
@@ -167,12 +187,19 @@ internal class AbemaAccountAccessOwner(
             val checked = current ?: value
             val stable = store.usable(checked.snapshot.revision) && now >= maxOf(checked.minimumWall, lastWall) &&
                 (checked.snapshot.record?.grant?.expiresAtMs?.let { now < it } != false)
-            if (!stable && current != null && proof === current) { generation++; proof = null }
+            if (!stable && current != null && proof === current) {
+                lost = lossLocked(when {
+                    !store.usable(checked.snapshot.revision) -> "STORE_CHANGED store=${store.lastChange()?.name ?: "NONE"}"
+                    now < maxOf(checked.minimumWall, lastWall) -> "CLOCK_ROLLBACK"
+                    else -> "GRANT_EXPIRED"
+                })
+                generation++; proof = null
+            }
             val okay = !closed && !poisoned && attachments > 0 && attachment?.active() != false &&
                 generation == value.generation && current != null && proof === current && stable
             if (okay) lastWall = now
             if (okay) current else null
-        }
+        }.also { emit(lost) }
     }
     private fun sameRecord(a: AbemaStoredAccount?, b: AbemaStoredAccount?): Boolean =
         if (a == null || b == null) a == null && b == null else
@@ -183,20 +210,33 @@ internal class AbemaAccountAccessOwner(
     // publication compares against the successor adopted afterwards.
     private fun durableProof(value: Proof, attachment: Attachment): Proof? {
         if (!cheap(value, attachment)) return null
+        // Which durable step refused, as a closed cause (#729).
+        var cause = "OWNER_CHECK_FAILED"
         val checked = try {
-            val first = if (ownerCurrent()) currentProof(value, attachment) else null
+            val owned = ownerCurrent()
+            val first = if (owned) currentProof(value, attachment) else null
+            cause = if (!owned) "OWNER_MISMATCH route=${routeCause()}" else if (first == null) "PROOF_LOST" else "READ_FAILED"
             val read = if (first == null) null else store.readSnapshot()
+            if (read != null) cause = "STORE_MISMATCH"
             val current = if (read == null || read.revision == first?.snapshot?.revision) first
                 else currentProof(value, attachment)
             current?.takeIf { read != null &&
                 read.revision == it.snapshot.revision && store.usable(read.revision) && sameRecord(read.record, it.snapshot.record) &&
-                ownerCurrent() && currentProof(value, attachment) === it }
-        } catch (_: Throwable) { null }
+                (ownerCurrent() || run { cause = "OWNER_MISMATCH route=${routeCause()}"; false }) &&
+                currentProof(value, attachment) === it }
+        } catch (_: Throwable) {
+            if (cause == "READ_FAILED") cause = "READ_FAILED store=${store.lastChange()?.name ?: "NONE"}"
+            null
+        }
         val okay = checked != null
         if (!okay && attachment.active()) {
+            var lost: String? = null
             val cancelled = synchronized(lock) {
-                if (generation == value.generation && proof?.lineage === value.lineage) revokeLocked() else null
+                if (generation == value.generation && proof?.lineage === value.lineage) {
+                    lost = lossLocked("DURABLE_$cause"); revokeLocked()
+                } else null
             }
+            emit(lost)
             cancelled?.start()
         }
         return checked
@@ -213,7 +253,16 @@ internal class AbemaAccountAccessOwner(
     // validates the renewed grant within the same deadline. Only an attachment
     // with a refresh waits; the wait never calls back into this owner.
     private fun acquire(attachment: Attachment, began: Long, deadline: Long): AbemaAccountAccessResult {
-        val first = acquireOnce(attachment, began, deadline)
+        var renewed = false
+        var first = acquireOnce(attachment, began, deadline) { renewed = true }
+        // A same-account renewal published while this acquisition validated the
+        // previous record cancels that validation (#729). Validate the renewed
+        // record once, within the same deadline, instead of failing the consumer.
+        if (renewed && first is AbemaAccountAccessResult.Failed && first.category == AbemaAccountFailure.CANCELLED &&
+            attachment.active()) {
+            emit("VALIDATION_RENEWED")
+            first = acquireOnce(attachment, began, deadline)
+        }
         val refresh = attachment.refresh ?: return first
         if (first !is AbemaAccountAccessResult.Failed || first.category !in setOf(AbemaAccountFailure.EXPIRED,
                 AbemaAccountFailure.CANCELLED) || !attachment.active() || !savedGrantExpired()) return first
@@ -235,7 +284,8 @@ internal class AbemaAccountAccessOwner(
         val record = snapshot.record
         store.usable(snapshot.revision) && record != null && wallMs() >= record.grant.expiresAtMs
     }.getOrDefault(false)
-    private fun acquireOnce(attachment: Attachment, began: Long, deadline: Long): AbemaAccountAccessResult {
+    private fun acquireOnce(attachment: Attachment, began: Long, deadline: Long,
+        renewed: () -> Unit = {}): AbemaAccountAccessResult {
         val entered = elapsedMs()
         if (began < 0 || began > Long.MAX_VALUE - 30_000 || entered < began || deadline <= entered ||
             deadline > began + 30_000) return AbemaAccountAccessResult.Failed(AbemaAccountFailure.TIME_LIMIT_REACHED)
@@ -283,7 +333,10 @@ internal class AbemaAccountAccessOwner(
         if ((now < began || now >= deadline) &&
             !(work.result == null && work.failure in setOf(AbemaAccountFailure.CLEANUP_FAILED, AbemaAccountFailure.EXPIRED)))
             return AbemaAccountAccessResult.Failed(AbemaAccountFailure.TIME_LIMIT_REACHED)
-        return work.result?.let { boundedResult(it) } ?: AbemaAccountAccessResult.Failed(work.failure)
+        return work.result?.let { boundedResult(it) } ?: run {
+            if (work.renewed) renewed()
+            AbemaAccountAccessResult.Failed(work.failure)
+        }
     }
     private fun flightCurrent(work: Flight): Boolean {
         val now = elapsedMs()
@@ -308,8 +361,10 @@ internal class AbemaAccountAccessOwner(
             if (expected != null) {
                 val current = store.readSnapshot()
                 checkTime()
-                if (!store.usable(expected.revision) || current.revision != expected.revision || !sameRecord(current.record, expected.record))
+                if (!store.usable(expected.revision) || current.revision != expected.revision || !sameRecord(current.record, expected.record)) {
+                    if (store.successor(expected) != null) work.renewed = true
                     throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
+                }
                 synchronized(lock) {
                     val wall = wallMs()
                     if (wall < maxOf(expected.record?.acceptedWallMs ?: 0, lastWall)) throw AbemaAccountException(AbemaAccountFailure.EXPIRED)
@@ -398,7 +453,8 @@ internal class AbemaAccountAccessOwner(
                         ready.snapshot.record?.grant?.expiresAtMs?.let { wall < it } != false) {
                         lastWall = wall
                         proof = accepted; work.result = accepted
-                    }
+                    } else if (ready != null && work.failure == AbemaAccountFailure.CANCELLED &&
+                        store.successor(ready.snapshot) != null) work.renewed = true
                     flight = null
                 }
             }

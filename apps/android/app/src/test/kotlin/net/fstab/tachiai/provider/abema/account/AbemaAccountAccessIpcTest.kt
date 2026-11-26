@@ -115,4 +115,23 @@ class AbemaAccountAccessIpcTest {
         assertEquals(AbemaAccountAccessIpc.Status.GUEST,
             AbemaAccountAccessIpc.result(AbemaAccountAccessIpc.base(chosen, 2) + ("status" to "GUEST"), chosen, 2, 601000)?.status)
     }
+    // #729: lease-loss lines carry fixed tokens, flags and a bounded age only.
+    @Test fun leaseLossLinesCarryOnlyClosedTokens() {
+        assertEquals("client=LEASE_LOST cause=SERVICE_REVOKED playback=true continuous=true acquired=true ageMs=1234",
+            AbemaAccountAccessIpc.lossLine("client=LEASE_LOST", "SERVICE_REVOKED", true, true, true, 1234))
+        assertEquals("service=CHECK_REFUSED cause=DURABLE_REFUSED playback=true continuous=false acquired=true",
+            AbemaAccountAccessIpc.lossLine("service=CHECK_REFUSED", "DURABLE_REFUSED", true, false, true))
+        assertEquals("UNKNOWN cause=UNKNOWN playback=false continuous=false acquired=false ageMs=86400000",
+            AbemaAccountAccessIpc.lossLine("bearer=secret-token", "https://example.test/?token=x", false, false, false, Long.MAX_VALUE))
+        assertFalse(AbemaAccountAccessIpc.lossLine("client=LEASE_LOST", "NONE", true, true, true, -1).contains("ageMs"))
+    }
+    @Test fun clientLossCausePrefersTheEarliestBrokenCondition() {
+        assertEquals("CLOSED", abemaAccessClientLossCause(true, true, true, false, false, false))
+        assertEquals("REVOKED", abemaAccessClientLossCause(false, true, true, false, false, false))
+        assertEquals("POISONED", abemaAccessClientLossCause(false, false, true, false, false, false))
+        assertEquals("SESSION_EXPIRED", abemaAccessClientLossCause(false, false, false, false, false, false))
+        assertEquals("SCOPE_LOST", abemaAccessClientLossCause(false, false, false, true, false, false))
+        assertEquals("CLOCK_ROLLBACK", abemaAccessClientLossCause(false, false, false, true, true, false))
+        assertEquals("GRANT_EXPIRED", abemaAccessClientLossCause(false, false, false, true, true, true))
+    }
 }

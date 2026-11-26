@@ -38,6 +38,9 @@ internal class AndroidAbemaAccountAccessClient(context: Context, instanceId: Str
     @Volatile private var renewedExpiry = 0L
     private val wallClock = AbemaAccountWallClock(System::currentTimeMillis)
     @Volatile private var cleanupConfirmed = false
+    // The first closed cause that ended an acquired lease (#729), logged once.
+    private val lossCause = java.util.concurrent.atomic.AtomicReference<String?>()
+    @Volatile private var acquiredAtMs = -1L
     private var connection: Connection? = null // Main-owned.
     private class Operation(val sequence: Long, val expected: Int) {
         val done = CountDownLatch(1)
@@ -49,11 +52,23 @@ internal class AndroidAbemaAccountAccessClient(context: Context, instanceId: Str
             AbemaAccountAccessIpc.sessionCurrent(request, began, now, acquired.get()) &&
             runCatching(canUse).getOrDefault(false)
     }
+    // Names, once, why an acquired lease stopped. Logging never affects admission.
+    private fun lose(cause: String) {
+        if (!acquired.get() || !lossCause.compareAndSet(null, cause)) return
+        runCatching {
+            android.util.Log.d("TachiaiAbemaAccount", AbemaAccountAccessIpc.lossLine("client=LEASE_LOST", cause,
+                request.playback, request.continuousPlayback, acquired = true,
+                ageMs = acquiredAtMs.takeIf { it >= 0 }?.let { SystemClock.elapsedRealtime() - it }))
+        }
+    }
+    private fun liveCause(wallSampled: Boolean = true) = abemaAccessClientLossCause(closed.get(), revoked.get(),
+        poisoned.get(), AbemaAccountAccessIpc.sessionCurrent(request, began, SystemClock.elapsedRealtime(), true),
+        runCatching(canUse).getOrDefault(false), wallSampled)
     fun current(): Boolean {
         val wall = wallClock.sample()
         val value = credential
         val okay = acquired.get() && live() && wall != null && (value == null || wall < maxOf(value.expiresAtMs, renewedExpiry))
-        if (!okay && acquired.get()) { revoked.set(true); close() }
+        if (!okay && acquired.get()) { lose(liveCause(wall != null)); revoked.set(true); close() }
         return okay
     }
     private val reply = Messenger(object : Handler(Looper.getMainLooper()) {
@@ -65,7 +80,9 @@ internal class AndroidAbemaAccountAccessClient(context: Context, instanceId: Str
             if (!AbemaAccountAccessIpc.matches(fields, request, seq)) return
             when (message.what) {
                 AbemaAccountAccessIpc.READY -> if (seq == 1L && fields.keys == AbemaAccountAccessIpc.base(request, seq).keys && live()) ready.countDown()
-                AbemaAccountAccessIpc.REVOKED -> if (fields.keys == AbemaAccountAccessIpc.base(request, seq).keys) { revoked.set(true); close() }
+                AbemaAccountAccessIpc.REVOKED -> if (fields.keys == AbemaAccountAccessIpc.base(request, seq).keys) {
+                    lose("SERVICE_REVOKED"); revoked.set(true); close()
+                }
                 AbemaAccountAccessIpc.RENEWED -> {
                     if (fields.keys != AbemaAccountAccessIpc.base(request, seq).keys + "expiry") return
                     val expiry = fields["expiry"] as? Long ?: return
@@ -75,6 +92,7 @@ internal class AndroidAbemaAccountAccessClient(context: Context, instanceId: Str
                 AbemaAccountAccessIpc.CLOSED -> {
                     if (fields.keys != AbemaAccountAccessIpc.base(request, seq).keys + "confirmed" || fields["confirmed"] !is Boolean) return
                     val confirmed = fields["confirmed"] == true
+                    if (!closed.get()) lose("SERVICE_CLOSED")
                     if (!confirmed) poisoned.set(true)
                     finishConnection(confirmed)
                 }
@@ -91,7 +109,7 @@ internal class AndroidAbemaAccountAccessClient(context: Context, instanceId: Str
         var bound = false
         var remote: Messenger? = null
         var binder: IBinder? = null
-        val death = IBinder.DeathRecipient { main.post { revoked.set(true); poisoned.set(true); finishConnection(false) } }
+        val death = IBinder.DeathRecipient { main.post { lose("BINDER_DIED"); revoked.set(true); poisoned.set(true); finishConnection(false) } }
         override fun onServiceConnected(name: ComponentName, service: IBinder) {
             if (connection !== this || closed.get()) { finishConnection(remote == null); return }
             try {
@@ -100,10 +118,10 @@ internal class AndroidAbemaAccountAccessClient(context: Context, instanceId: Str
             } catch (_: Throwable) { poisoned.set(true); finishConnection(false) }
         }
         override fun onServiceDisconnected(name: ComponentName) {
-            if (connection === this) { poisoned.set(true); revoked.set(true); finishConnection(false) }
+            if (connection === this) { lose("SERVICE_DISCONNECTED"); poisoned.set(true); revoked.set(true); finishConnection(false) }
         }
         override fun onBindingDied(name: ComponentName) {
-            if (connection === this) { poisoned.set(true); revoked.set(true); finishConnection(false) }
+            if (connection === this) { lose("BINDING_DIED"); poisoned.set(true); revoked.set(true); finishConnection(false) }
         }
         override fun onNullBinding(name: ComponentName) { if (connection === this) finishConnection(true) }
         fun send(what: Int, seq: Long) {
@@ -150,6 +168,7 @@ internal class AndroidAbemaAccountAccessClient(context: Context, instanceId: Str
         if (!live()) { close(); return failure(AbemaAccountFailure.CANCELLED) }
         credential = value.grant
         if (wallClock.sample() == null) return failure(AbemaAccountFailure.EXPIRED)
+        acquiredAtMs = SystemClock.elapsedRealtime()
         acquired.set(true)
         if (!current()) return failure(AbemaAccountFailure.CANCELLED)
         return value
@@ -162,11 +181,11 @@ internal class AndroidAbemaAccountAccessClient(context: Context, instanceId: Str
         }
         main.post {
             try { if (live()) connection?.send(what, pending.sequence) else pending.done.countDown() }
-            catch (_: Throwable) { pending.done.countDown(); revoked.set(true); close() }
+            catch (_: Throwable) { pending.done.countDown(); lose("SEND_FAILED"); revoked.set(true); close() }
         }
         try {
             val completed = checkWait?.invoke(pending.done) ?: await(pending.done, waitMs, true)
-            if (!completed) { revoked.set(true); close(); return null }
+            if (!completed) { lose(if (live()) "REPLY_TIMEOUT" else liveCause()); revoked.set(true); close(); return null }
             return pending.fields.takeIf { live() }
         } finally { synchronized(lock) { if (operation === pending) operation = null }; pending.fields = null }
     }
@@ -180,7 +199,7 @@ internal class AndroidAbemaAccountAccessClient(context: Context, instanceId: Str
                         SystemClock::elapsedRealtime, ::live).also { interrupted = it.interrupted }.completed
                 }
                 AbemaAccountCheckCompletion(abemaAccountCheckAccepted(fields, request), interrupted)
-            }, revoke = { revoked.set(true); close() })
+            }, revoke = { lose("CHECK_REFUSED"); revoked.set(true); close() })
     }
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
@@ -216,4 +235,16 @@ internal class AndroidAbemaAccountAccessClient(context: Context, instanceId: Str
         return confirmed
     }
     override fun toString() = "AndroidAbemaAccountAccessClient(redacted)"
+}
+
+// The closed cause of an acquired lease that is no longer current (#729).
+internal fun abemaAccessClientLossCause(closed: Boolean, revoked: Boolean, poisoned: Boolean,
+    sessionCurrent: Boolean, scopeCurrent: Boolean, wallSampled: Boolean): String = when {
+    closed -> "CLOSED"
+    revoked -> "REVOKED"
+    poisoned -> "POISONED"
+    !sessionCurrent -> "SESSION_EXPIRED"
+    !scopeCurrent -> "SCOPE_LOST"
+    !wallSampled -> "CLOCK_ROLLBACK"
+    else -> "GRANT_EXPIRED"
 }

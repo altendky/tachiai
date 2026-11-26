@@ -97,6 +97,14 @@ internal object AbemaAccountAccessIpc {
             }
         }
     }.getOrNull()
+    // One closed line naming why an account lease stopped (#729): fixed event
+    // and cause tokens plus flags and a bounded age. Never account values.
+    fun lossLine(event: String, cause: String, playback: Boolean, continuous: Boolean, acquired: Boolean,
+        ageMs: Long? = null): String {
+        fun token(value: String) = value.takeIf { it.matches(Regex("[a-z]{1,16}=[A-Z_]{1,32}|[A-Z_]{1,32}")) } ?: "UNKNOWN"
+        val age = ageMs?.takeIf { it >= 0 }?.let { " ageMs=${minOf(it, 86_400_000L)}" } ?: ""
+        return "${token(event)} cause=${token(cause)} playback=$playback continuous=$continuous acquired=$acquired$age"
+    }
     fun bundle(fields: Map<String, Any>) = Bundle().apply {
         for ((key, value) in fields) when (value) {
             is String -> putString(key, value); is Long -> putLong(key, value); is Boolean -> putBoolean(key, value)
@@ -125,7 +133,7 @@ internal class AbemaAccountAccessOwnerRegistry {
                 if (!existing.retired.get() && runCatching(existing.routeCurrent).getOrDefault(false)) return existing.owner
                 if (existing.retired.compareAndSet(false, true)) {
                     retired.add(existing.owner)
-                    existing.owner.close() // Revoke old cheap leases before allowing replacement.
+                    existing.owner.retire() // Revoke old cheap leases before allowing replacement.
                     existing.revoked = true
                     existing.owner.whenRetiredIdle {
                         retired.remove(existing.owner); shared.remove(key, existing)
@@ -173,7 +181,8 @@ internal object AndroidAbemaAccountAccessOwners {
                 { gate -> binding.transport(captured, gate) },
                 { transport -> ((transport as? OwnedAbemaAccountTransport)?.cleanupConfirmed == true).also { confirmed ->
                     if (!confirmed) { blocked.add(instanceId); AbemaAccountWorkers.poisoned(instanceId).set(true) }
-                } }, { marker -> android.util.Log.d("TachiaiAbemaAccount", "owner=$marker") })
+                } }, { marker -> android.util.Log.d("TachiaiAbemaAccount", "owner=$marker") },
+                routeRefusal = { binding.routeRefusal })
         }
         // A reused registry owner does not replace the fresh caller's scope
         // check. Durable acquire/lease checks still validate the shared grant
@@ -251,6 +260,17 @@ class AbemaAccountAccessService : Service() {
             val now = SystemClock.elapsedRealtime()
             return !ended.get() && AbemaAccountAccessIpc.sessionCurrent(request, began, now, lease != null) && lease?.current() != false
         }
+        // Why this session stopped being current, as one closed line (#729).
+        private fun lost(event: String, cause: String? = null) = runCatching {
+            val reason = cause ?: when {
+                ended.get() -> "ENDED"
+                !AbemaAccountAccessIpc.sessionCurrent(request, began, SystemClock.elapsedRealtime(), lease != null) -> "SESSION_EXPIRED"
+                lease?.current() == false -> "LEASE_LOST"
+                else -> "NONE"
+            }
+            android.util.Log.d("TachiaiAbemaAccount", AbemaAccountAccessIpc.lossLine("service=$event", reason,
+                request.playback, request.continuousPlayback, lease != null))
+        }
         fun open() {
             try { reply.binder.linkToDeath(death, 0) }
             catch (_: Throwable) { end(sequence); return }
@@ -258,7 +278,7 @@ class AbemaAccountAccessService : Service() {
             pulse()
         }
         private fun pulse() {
-            if (!current()) { send(AbemaAccountAccessIpc.REVOKED, sequence); end(sequence); return }
+            if (!current()) { lost("LEASE_REVOKED"); send(AbemaAccountAccessIpc.REVOKED, sequence); end(sequence); return }
             val announced = announcedExpiry
             val expiry = if (announced == null) null else runCatching { lease?.expiresAtMs() }.getOrNull()
             if (announced != null && expiry != null && expiry > announced) {
@@ -327,18 +347,29 @@ class AbemaAccountAccessService : Service() {
             }
         }
         fun check(seq: Long) {
-            if (!current() || lease == null || !busy.compareAndSet(false, true)) { end(seq); return }
+            if (!current() || lease == null || !busy.compareAndSet(false, true)) {
+                lost("CHECK_REFUSED", if (current() && lease != null) "BUSY" else null); end(seq); return
+            }
             val began = SystemClock.elapsedRealtime()
             val deadline = AbemaAccountAccessIpc.operationDeadline(request, began, acquired = true,
-                limitMs = AbemaAccountAccessIpc.IPC_MS) ?: run { busy.set(false); end(seq); return }
+                limitMs = AbemaAccountAccessIpc.IPC_MS) ?: run { lost("CHECK_REFUSED", "TIME_LIMIT"); busy.set(false); end(seq); return }
             fun inTime() = SystemClock.elapsedRealtime().let { it >= began && it < deadline }
             worker {
-                val okay = inTime() && current() && runCatching { lease?.checkWorker() == true }.getOrDefault(false) &&
-                    current() && inTime()
+                // The first refused step, as a closed cause (#729).
+                val refusal = when {
+                    !inTime() -> "TIME_LIMIT"
+                    !current() -> null
+                    !runCatching { lease?.checkWorker() == true }.getOrDefault(false) -> "DURABLE_REFUSED"
+                    !current() -> null
+                    !inTime() -> "TIME_LIMIT"
+                    else -> "ADMITTED"
+                }
                 main.post {
                     busy.set(false)
                     if (ended.get()) return@post
-                    val admitted = okay && current() && inTime()
+                    val admitted = refusal == "ADMITTED" && current() && inTime()
+                    if (!admitted) lost("CHECK_REFUSED", refusal.takeIf { it != "ADMITTED" } ?:
+                        if (current()) "TIME_LIMIT" else null)
                     send(AbemaAccountAccessIpc.CHECKED, seq, mapOf("current" to admitted))
                     if (!admitted) end(seq)
                 }

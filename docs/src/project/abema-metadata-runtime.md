@@ -200,7 +200,16 @@ catalog request on the provider screen, and the client waits until the
 service reports the run finished so the following listing is not refused
 during cleanup. Known lengths stay in memory for the app session, shared by
 both lists; a broadcast without one keeps its span and is retried only when
-the listing is reloaded. Nothing is persisted.
+the listing is reloaded. Listings persist nothing.
+
+The provider screen also asks for configured broadcasts that have no saved
+real length ([#713](https://github.com/altendky/tachiai/issues/713)), after
+the shown listing and under the same rules: at most 20 per request, ended by
+any other catalog request, and asked once per visit to the screen, or again
+after Refresh metadata. A length read for a configured broadcast, or already
+known when it is added, is saved with that configured item as whole seconds
+only; see
+[configured sources](configured-catalog.md#replay-lengths-of-configured-broadcasts).
 
 ## Preparation timing
 

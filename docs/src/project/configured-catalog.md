@@ -81,6 +81,12 @@ bounded to 32 items and 8192 encoded bytes. The global secret-store limit, exist
 key aliases and other provider/route/grant records are unchanged. JVM and file
 locks cover read-modify-write; writes use the existing encrypted AtomicFile path.
 An invalid or unknown-version record fails rather than regenerating samples.
+Version 2 ([#713](https://github.com/altendky/tachiai/issues/713)) adds each
+item's optional listed length and a broadcast's optional real replay length,
+as bounded whole seconds. Version 1 records stay readable with neither length
+and are not rewritten on read; the next mutation writes version 2. A build
+from before version 2 cannot read a version 2 record and reports a read
+failure without replacing it.
 
 An absent list is empty; built-in samples are never seeded. Lists saved by the
 former legacy projection keep their deterministic item UUIDs (derived from
@@ -158,6 +164,34 @@ observing access loss or closing management discards retained navigation.
 Scroll anchors and account-derived discovery are not serialized into Activity
 saved state. This adds no provider-history collection or Tachiai usage tracking.
 
+### Replay lengths of configured broadcasts
+
+ABEMA lists a broadcast with its reserved slot span, which can be longer than
+its replay; the real length comes from the replay manifest
+([#672](https://github.com/altendky/tachiai/issues/672)). Since
+[#713](https://github.com/altendky/tachiai/issues/713) a configured broadcast
+keeps that real length with its saved item, and Configured streams shows it
+in place of the span:
+
+- **Add.** When the length is already known in the app session, for example
+  from Episodes or Browse episodes, Add saves it with the item. A result whose
+  row still shows the span, such as a search result, is saved with the known
+  length too.
+- **Missing lengths.** While Manage streams is shown, configured broadcasts
+  without a saved length are filled from the session's known lengths, or else
+  asked in the background after the shown listing, under the Browse episodes
+  rules: at most 20 at a time, ended by any other catalog request, and never
+  setting the loading or saving state. A broadcast is asked once per visit;
+  one that is live, upcoming or unreadable keeps its span with no error.
+- **Saving.** A length read this way is saved with its item in a separate
+  locked write that only fills a missing length; it never recreates a removed
+  item or changes order, metadata or quality.
+- **Refresh metadata** replaces the listed metadata, including the span, and
+  keeps a saved real length. A broadcast still without one is asked again.
+
+The length is display metadata only, as whole seconds; it is never used for
+playback, alignment or seeking, and no manifest, URL or token is saved.
+
 ### Explicit metadata refresh
 
 [Issue #124](https://github.com/altendky/tachiai/issues/124) adds **Refresh metadata**
@@ -165,7 +199,9 @@ for an existing configured item when its provider advertises refresh access.
 It refreshes that item's exact public resource through the instance-bound adapter;
 it does not repeat Add or change provider favorites. Metadata, availability and
 the optional Scheduled date can change, while local UUID, current order, quality
-defaults and feed bindings remain intact. Unavailable items remain configured.
+defaults and feed bindings remain intact. A configured broadcast's saved real
+replay length is kept ([above](#replay-lengths-of-configured-broadcasts)).
+Unavailable items remain configured.
 There is no automatic polling or refresh-all operation.
 
 Unavailable refresh access is explained. Access, network and storage failures

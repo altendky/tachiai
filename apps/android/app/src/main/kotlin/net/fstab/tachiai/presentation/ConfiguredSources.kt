@@ -12,9 +12,19 @@ internal data class ConfiguredSource(
     val instanceId: String,
     val entry: CatalogEntry,
     val quality: NativeQualityPreferences = NativeQualityPreferences(),
+    // A broadcast's real replay length (#713), read from its replay manifest
+    // (#672), which the provider may list with a longer slot span. Display
+    // only, like entry.durationSeconds; unknown stays null.
+    val replayLengthSeconds: Long? = null,
 ) {
-    init { require(validProviderInstanceId(id) && validProviderInstanceId(instanceId)) }
+    init {
+        require(validProviderInstanceId(id) && validProviderInstanceId(instanceId))
+        require(replayLengthSeconds == null ||
+            entry.resource.intent == CatalogIntent.BROADCAST && replayLengthSeconds in 1..MAX_CATALOG_DURATION_SECONDS)
+    }
     val choice get() = ConfiguredFeedChoice(id, instanceId)
+    // The entry as shown: a known real length replaces the listed duration.
+    val shownEntry get() = replayLengthSeconds?.let { entry.copy(durationSeconds = it) } ?: entry
 }
 
 internal data class ConfiguredFeedChoice(val itemId: String, val instanceId: String) {

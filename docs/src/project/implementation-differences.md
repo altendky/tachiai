@@ -34,6 +34,13 @@ timeline entries, and Twitch's HLS playlist recorder keeps retained segments in
 the live media playlist. The 6:00 delay limit, its refusal message and resuming a feed
 paused past its oldest recorded point are the common UX the user approved on
 2026-11-25; no equivalent buffer is established for the web viewer or Apple.
+Building a delay longer than the recorded history (#618, user 2026-11-25) is
+Android-only as well: the held Media3 player first seeks back into its
+recorded history, then is paused while the other plays. The countdown comes
+from both players' clocks, Timing steps adjust it, and it resumes with a seek
+so Media3's live speed control keeps the delay. The web fixture has no live
+rewind buffer, so it has no building delay; it would need the same hold,
+countdown, step and cancel rules before offering it.
 
 Android translates provider text
 ([#643](prototype-ux.md#provider-text-translation--643)) with Google ML Kit's

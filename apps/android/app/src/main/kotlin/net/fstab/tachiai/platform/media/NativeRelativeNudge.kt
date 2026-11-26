@@ -31,6 +31,7 @@ internal fun nativeRelativeNudgePlan(a: NativeTimingSnapshot?, b: NativeTimingSn
         if (targetClock < 0 || rescue && target !in 0..duration) return null
         // #618: never hold a live feed further behind live than the delay limit.
         if (live && nativeLiveDelayExceeded(sample, movement)) return null
+        if (live && nativeLiveForwardExceeded(sample, movement)) return null
         val plan = nativeRelativeSeekPlan(sample, movement)
         if (plan.outcome != NativeSeekOutcome.REQUESTED || plan.targetMs != target) return null
         return if (live) minOf(target, duration - target) else Long.MAX_VALUE
@@ -73,3 +74,14 @@ internal fun nativeNudgeDelayLimited(a: NativeTimingSnapshot?, b: NativeTimingSn
     val (sample, movement) = if (deltaMs > 0) b to -deltaMs else a to deltaMs
     return sample != null && nativeLiveDelayExceeded(sample, movement)
 }
+
+// How far a live feed can move forward before passing its live point, where a
+// skip stops too (#660); null when the live point is unknown. Past it the feed
+// only stalls, waiting for media the provider hasn't published yet (#707).
+internal fun nativeLiveForwardRoomMs(sample: NativeTimingSnapshot): Long? {
+    if (!sample.live && !sample.dynamic) return null
+    return nativeBehindLivePointMs(sample)?.coerceAtLeast(0)
+}
+
+internal fun nativeLiveForwardExceeded(sample: NativeTimingSnapshot, movementMs: Long): Boolean =
+    movementMs > 0 && nativeLiveForwardRoomMs(sample)?.let { movementMs > it } == true

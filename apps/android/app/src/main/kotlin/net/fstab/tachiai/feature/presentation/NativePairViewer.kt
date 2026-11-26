@@ -36,6 +36,7 @@ import net.fstab.tachiai.platform.media.NativeEventMarks
 import net.fstab.tachiai.platform.media.NativePairMember
 import net.fstab.tachiai.platform.media.NativePairSkipPlan
 import net.fstab.tachiai.platform.media.SKIP_END_MARGIN_MS
+import net.fstab.tachiai.platform.media.delayBuildLabel
 import net.fstab.tachiai.platform.media.nativeLiveSkipRange
 import net.fstab.tachiai.platform.media.nativeBehindLivePointMs
 import net.fstab.tachiai.platform.media.nativeLivePlan
@@ -556,6 +557,11 @@ internal class NativePairViewer(
         val side = (listOf(primary) + NativeMixedSide.entries).firstOrNull { it in targets } ?: return null
         return targets.getValue(side).copy(anyLive = anyLive)
     }
+    // While a delay builds (#618) the pair is busy, but Pause, Back to live,
+    // Live or a skip cancels the build instead of waiting, and a Timing step
+    // adjusts it.
+    private fun delayBuilding() = pair()?.delayBuild != null
+    private fun adjustmentBusy() = playbackBusy() && !delayBuilding()
     // A skip settles while this viewer's pair skip holds both feeds, and until
     // the moved feeds stop buffering at their new position. A single feed seeks
     // without a hold, so a second skip during that buffering would otherwise be
@@ -581,7 +587,7 @@ internal class NativePairViewer(
             if (flash) flashPosition(deltaMs, predicted, target)
             return
         }
-        if (playbackBusy()) { showNotice("Wait for the current adjustment to finish."); return }
+        if (adjustmentBusy()) { showNotice("Wait for the current adjustment to finish."); return }
         dispatchSkip(deltaMs, flash, target)
     }
     private fun dispatchSkip(deltaMs: Long, flash: Boolean, target: TransportTarget) {
@@ -602,11 +608,11 @@ internal class NativePairViewer(
     private fun goLive() {
         if (!isAttachedToWindow || visibility != VISIBLE) return
         showControls()
-        if (liveAtEdge) { showNotice("Already live."); return }
+        if (liveAtEdge && !delayBuilding()) { showNotice("Already live."); return }
         val target = transportTarget()
         if (target != null && target.anyLive) {
             if (skipInFlight && skipSettling()) { liveQueued = true; queuedSkipMs = 0L; return }
-            if (playbackBusy()) { showNotice("Wait for the current adjustment to finish."); return }
+            if (adjustmentBusy()) { showNotice("Wait for the current adjustment to finish."); return }
             dispatchLive(target)
             return
         }
@@ -854,9 +860,26 @@ internal class NativePairViewer(
     private fun row(vararg views: View) = LinearLayout(context).apply {
         views.forEach { addView(it, LinearLayout.LayoutParams(0, -2, 1f)) }
     }
+    // adds: null when no delay builds; otherwise whether this row's steps add
+    // to the build (hold its feed further behind) or reduce it (#618).
+    private fun refreshTimingStep(control: View, ready: Boolean, busy: Boolean, adds: Boolean?) {
+        control.isEnabled = ready
+        control.alpha = if (ready && busy) 0.5f else 1f
+        ViewCompat.setStateDescription(control, when {
+            ready && adds == true -> TIMING_ADDS_TO_BUILD
+            ready && adds == false -> TIMING_REDUCES_BUILD
+            ready && busy -> TIMING_BUSY
+            else -> null
+        })
+    }
     private fun timingButtons(forA: Boolean) = ViewerTimingStep.entries.map { choice ->
         button(choice.label, "advance:${if (forA) "A" else "B"}:${choice.milliseconds}") {
-            if (!hasPairSlots || pair()?.busy != false || playbackBusy() || panel != "Timing") return@button
+            if (!hasPairSlots || panel != "Timing") return@button
+            // While a delay builds, a step adds to or reduces it (#618).
+            if (delayBuilding()) {
+                onRelative(if (forA) choice.milliseconds else -choice.milliseconds); refresh(); return@button
+            }
+            if (pair()?.busy != false || playbackBusy()) return@button
             pendingMarkAlignment = null
             markAlignmentMessage = null
             onRelative(if (forA) choice.milliseconds else -choice.milliseconds); refresh()
@@ -1028,7 +1051,7 @@ internal class NativePairViewer(
         if (currentPair != null && (if (side == NativeMixedSide.A) currentPair.a else currentPair.b) !== member)
             return NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE)
         val snapshot = runCatching { member.timingSnapshot() }.getOrNull()
-        if (snapshot == null || snapshot.state != Player.STATE_READY || playbackBusy())
+        if (snapshot == null || snapshot.state != Player.STATE_READY || adjustmentBusy())
             return NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE)
         if (snapshot.playingAd) return NativeSeekPlan(NativeSeekOutcome.AD_BLOCKED)
         return runCatching { catchUpPlan(side) }.getOrElse { NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE) }
@@ -1419,12 +1442,12 @@ internal class NativePairViewer(
         // next Select acted on it (for example Back to sources). The step's
         // handler ignores presses until the adjustment completes.
         val timingReady = hasPairSlots && current != null
-        val timingBusy = current?.busy != false || playbackBusy()
-        (advanceA + advanceB).forEach { control ->
-            control.isEnabled = timingReady
-            control.alpha = if (timingReady && timingBusy) 0.5f else 1f
-            ViewCompat.setStateDescription(control, if (timingReady && timingBusy) TIMING_BUSY else null)
-        }
+        // A building delay's steps adjust it, so they are not shown as busy.
+        // Advance A holds B further behind; Advance B holds A further behind.
+        val building = current?.delayBuild
+        val timingBusy = building == null && (current?.busy != false || playbackBusy())
+        advanceA.forEach { control -> refreshTimingStep(control, timingReady, timingBusy, building?.let { it.side == NativeMixedSide.B }) }
+        advanceB.forEach { control -> refreshTimingStep(control, timingReady, timingBusy, building?.let { it.side == NativeMixedSide.A }) }
         val sa = runCatching { current?.a?.timingSnapshot() }.getOrNull()
         val sb = runCatching { current?.b?.timingSnapshot() }.getOrNull()
         val ta = runCatching { current?.a?.timelineEvidence() }.getOrNull()
@@ -1738,6 +1761,17 @@ internal class NativePairViewer(
         private val textA = FrameTextLayer(context, a).also { paneA.addView(it, 1, LayoutParams(-1, -1)) }
         private val textB = FrameTextLayer(context, b).also { paneB.addView(it, 1, LayoutParams(-1, -1)) }
         fun textLayer(side: NativeMixedSide) = if (side == NativeMixedSide.A) textA else textB
+        // "Building delay… 0:40" over the held feed's frozen frame (#618),
+        // the same on phone and TV. The frame stays visible around it.
+        private val buildingA = building(paneA)
+        private val buildingB = building(paneB)
+        private fun building(pane: FrameLayout) = text("").apply {
+            visibility = GONE; gravity = Gravity.CENTER
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            background = context.prototypeSurface(R.color.prototype_panel)
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+            pane.addView(this, LayoutParams(-2, -2, Gravity.CENTER))
+        }
         private inner class FeedNotice(val scroll: ScrollView, val message: TextView, val recovery: Button)
         init {
             setOnClickListener { videoTap() }
@@ -1833,6 +1867,16 @@ internal class NativePairViewer(
             }
             update(NativeMixedSide.A, a, labelA, noticeA)
             update(NativeMixedSide.B, b, labelB, noticeB)
+            val build = pair()?.delayBuild
+            fun caption(side: NativeMixedSide, view: TextView, label: String) {
+                val shown = build?.side == side && side in selectedSides && feedMessage(side) == null
+                view.visibility = if (shown) VISIBLE else GONE
+                if (!shown) return
+                view.text = delayBuildLabel(checkNotNull(build).remainingMs)
+                view.contentDescription = "$label: ${view.text}"
+            }
+            caption(NativeMixedSide.A, buildingA, labelA)
+            caption(NativeMixedSide.B, buildingB, labelB)
         }
         fun unbindPlayers() { playerA?.removeListener(listenerA); playerB?.removeListener(listenerB); playerA = null; playerB = null }
         fun swap() { if (hasPairSlots) { primaryA = !primaryA; cancelScrub(); showControls(); requestLayout(); refresh() } }
@@ -1927,6 +1971,9 @@ private const val OVERLAY_TEXT = 0xFFE8ECEE.toInt()
 
 // State description of a timing step while an adjustment is in progress.
 internal const val TIMING_BUSY = "Adjustment in progress"
+// State descriptions of a timing step while a delay builds (#618).
+internal const val TIMING_ADDS_TO_BUILD = "Building delay; adds to the delay"
+internal const val TIMING_REDUCES_BUILD = "Building delay; reduces the delay"
 // A skip's settling (a pair hold, or a feed buffering at its new position)
 // stops queuing further presses after this long, like the pair hold.
 private const val SKIP_SETTLE_LIMIT_MS = 8_000L

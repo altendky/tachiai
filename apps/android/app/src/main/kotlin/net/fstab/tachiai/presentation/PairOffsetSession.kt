@@ -115,6 +115,58 @@ internal class PairOffsetSession(initialPreference: PairOffsetPreference?) {
         command = null; accepted = false; message = reason
     }
 
+    // #618: a building delay ended before it was applied. A restored feed is
+    // back in its previous relationship, so the applied offset is unchanged;
+    // otherwise its baseline is unknown. The saved preference never changes.
+    fun delayBuildEnded(token: Any, restored: Boolean, reason: String) {
+        if (pairToken !== token || command == null) return
+        if (accepted && !restored) { applied = null; enabledApplied = false; correspondenceEstablished = false }
+        command = null; accepted = false; message = reason
+    }
+
+    // #618: a saved-offset restore that has to build delay can't while a feed
+    // is still paused at startup. It is not attempted yet: the owner plans it
+    // again once both feeds play.
+    fun deferRestore(value: PairOffsetCommand) {
+        if (!isCurrent(value) || accepted || value.origin != PairOffsetCommandOrigin.STARTUP) return
+        command = null
+        // planStartup always names its target; planRestart's is unknown.
+        if (value.targetOffsetMs != null) startupAttempted = false else restartAttempted = false
+        message = "The saved offset will be restored once both feeds play."
+    }
+
+    // #618: a Timing step while a delay builds adjusts the build (user,
+    // 2026-11-25), so the pending command now requests that much more or
+    // less. It becomes a manual change, saved once the build is applied.
+    fun adjustPending(token: Any, extraDeltaMs: Long): Boolean {
+        val current = command ?: return false
+        if (pairToken !== token || !accepted || pendingSave != null) return false
+        val delta: Long
+        val target: Long?
+        val fallback: Long?
+        try {
+            delta = Math.addExact(current.deltaMs, extraDeltaMs)
+            target = current.targetOffsetMs?.let { Math.addExact(it, extraDeltaMs) }
+            fallback = (current.fallbackOffsetMs ?: current.targetOffsetMs)?.let { Math.addExact(it, extraDeltaMs) }
+        } catch (_: ArithmeticException) { message = "Offset exceeds the supported range."; return false }
+        if (delta !in -MAX_PAIR_OFFSET_MS..MAX_PAIR_OFFSET_MS ||
+            target != null && target !in -MAX_PAIR_OFFSET_MS..MAX_PAIR_OFFSET_MS ||
+            fallback != null && fallback !in -MAX_PAIR_OFFSET_MS..MAX_PAIR_OFFSET_MS) {
+            message = "Offset exceeds the supported range."
+            return false
+        }
+        // A manual step moves away from a marked mapping by the same amount.
+        val correspondence = current.correspondence?.takeIf { current.origin == PairOffsetCommandOrigin.MANUAL }?.let {
+            runCatching { it.copy(residualMs = Math.addExact(it.residualMs, extraDeltaMs)) }.getOrNull()
+        }
+        startupAttempted = true
+        restartAttempted = true
+        command = PairOffsetCommand(current.id, PairOffsetCommandOrigin.MANUAL, current.pairToken, delta, true, target,
+            current.beforeSettlementRevision, correspondence, timelineRestore = false, fallbackOffsetMs = fallback)
+        message = null
+        return true
+    }
+
     private fun interruptPending(): Boolean {
         if (command == null) return false
         if (accepted) { applied = null; enabledApplied = false; correspondenceEstablished = false }

@@ -156,7 +156,10 @@ discontinuity sequence, why splicing stopped (`PREVIOUS_START`,
 distance behind live and recording and eviction counts. A playing feed whose
 loaded media all lies before its window logs `oldestResume playing` with its
 positions when it is moved to the oldest listed point. No playlist or segment
-URL, header or media is logged.
+URL, header or media is logged. A live ABEMA feed logs `recordedRendition
+pinned=true bandwidth=…` when adaptive selection is held on its recorded
+rendition behind the provider's window, and `pinned=false` when it is
+released ([#711](https://github.com/altendky/tachiai/issues/711)).
 
 ## Playback health and retry intent
 

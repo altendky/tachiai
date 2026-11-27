@@ -85,6 +85,42 @@ class AbemaAccountAccessOwnerTest {
         assertEquals(2, f.profiles.get()); assertArrayEquals(before, f.storage.bytes)
         resumed.close(); f.owner.close()
     }
+    // #783: a Stop during acquisition detaches both feeds' consumers at
+    // whatever stage the shared validation has reached. Every stage must end
+    // with confirmed cleanup, no poison, and an owner the next Watch can use.
+    @Test fun cancellationAtEachAcquisitionStageConfirmsCleanupAndReleasesTheOwner() {
+        val calibration = Fixture()
+        calibration.owner.attach().use { assertTrue(it.acquire() is AbemaAccountAccessResult.Account) }
+        val checks = calibration.ownerChecks
+        assertTrue(checks >= 3)
+        val stages = (1..checks).map { "ownerCheck$it" } + listOf("profile", "transportClose", "transportCleanup")
+        for (stage in stages) {
+            val f = Fixture(); val entered = CountDownLatch(1); val release = CountDownLatch(1)
+            val calls = AtomicInteger()
+            val block = { entered.countDown(); assertTrue(release.await(3, TimeUnit.SECONDS)) }
+            when (stage) {
+                "profile" -> f.profileAction = block
+                "transportClose" -> f.closeAction = block
+                "transportCleanup" -> f.cleanupAction = block
+                else -> { val k = stage.removePrefix("ownerCheck").toInt(); f.ownerHook = { if (calls.incrementAndGet() == k) block() } }
+            }
+            val a = f.owner.attach(); val b = f.owner.attach()
+            val pool = Executors.newFixedThreadPool(2)
+            try {
+                val first = pool.submit<AbemaAccountAccessResult> { a.acquire() }
+                val second = pool.submit<AbemaAccountAccessResult> { b.acquire() }
+                assertTrue("$stage was not reached", entered.await(3, TimeUnit.SECONDS))
+                a.close(); b.close()
+                release.countDown()
+                first.get(3, TimeUnit.SECONDS); second.get(3, TimeUnit.SECONDS)
+                f.awaitCleanup()
+                assertTrue("$stage left the owner busy", f.owner.isIdle)
+                assertTrue("$stage left an attachment unconfirmed", a.cleanupConfirmed && b.cleanupConfirmed)
+                f.ownerHook = {}; f.profileAction = {}; f.closeAction = {}; f.cleanupAction = {}
+                f.owner.attach().use { assertTrue("$stage poisoned the owner", it.acquire() is AbemaAccountAccessResult.Account) }
+            } finally { release.countDown(); a.close(); b.close(); pool.shutdownNow() }
+        }
+    }
     @Test fun onlyGenuineMissingUsableRecordPermitsPinnedGuestAndLaterGrantClosesIt() {
         val f = Fixture(false); val attachment = f.owner.attach()
         val guest = (attachment.acquire() as AbemaAccountAccessResult.Guest).lease

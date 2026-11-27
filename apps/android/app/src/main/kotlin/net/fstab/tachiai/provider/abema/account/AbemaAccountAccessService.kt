@@ -27,6 +27,13 @@ internal object AbemaAccountAccessIpc {
     // CHECK_MS; the client waits CHECK_REPLY_MS from dispatch for its verdict.
     const val CHECK_MS = 10_000L
     const val CHECK_REPLY_MS = CHECK_MS + 2_000L
+    // A session's end waits up to END_MS for its work and owner attachment to
+    // confirm cleanup, such as a cancelled validation finishing a store read or
+    // route teardown (#783). The client waits CLOSE_REPLY_MS for that CLOSED,
+    // so an end confirmed within the service's bound is never lost to the
+    // client's own timer. Both stay inside the viewer's 20 s cleanup deadline.
+    const val END_MS = 10_000L
+    const val CLOSE_REPLY_MS = END_MS + 2_000L
     enum class Status { ACCOUNT, GUEST, FAILURE }
     class Request(val nonce: String, val instance: String, val proof: String, val source: String,
         val deadline: Long, val playback: Boolean, val continuousPlayback: Boolean = false) {
@@ -162,6 +169,7 @@ internal object AndroidAbemaAccountAccessOwners {
     private val owners = AbemaAccountAccessOwnerRegistry()
     private val blocked = ConcurrentHashMap.newKeySet<String>()
     fun poison(request: AbemaAccountAccessIpc.Request) {
+        runCatching { android.util.Log.d("TachiaiAbemaAccount", "owner=INSTANCE_POISONED cause=SESSION_END") }
         blocked.add(request.instance)
         AbemaAccountWorkers.poisoned(request.instance).set(true)
     }
@@ -185,7 +193,10 @@ internal object AndroidAbemaAccountAccessOwners {
                 SystemClock::elapsedRealtime, { binding.sameOwner(captured) },
                 { gate -> binding.transport(captured, gate) },
                 { transport -> ((transport as? OwnedAbemaAccountTransport)?.cleanupConfirmed == true).also { confirmed ->
-                    if (!confirmed) { blocked.add(instanceId); AbemaAccountWorkers.poisoned(instanceId).set(true) }
+                    if (!confirmed) {
+                        runCatching { android.util.Log.d("TachiaiAbemaAccount", "owner=INSTANCE_POISONED cause=TRANSPORT_CLEANUP") }
+                        blocked.add(instanceId); AbemaAccountWorkers.poisoned(instanceId).set(true)
+                    }
                 } }, { marker -> android.util.Log.d("TachiaiAbemaAccount", "owner=$marker") },
                 routeRefusal = { binding.routeRefusal })
         }
@@ -194,7 +205,10 @@ internal object AndroidAbemaAccountAccessOwners {
         // revision and exact stored record against the captured route owner.
         return attachAbemaAccountAccessOwner(owner,
             freshScopeCurrent = { binding.sameOwner(captured) && instanceId !in blocked && !AbemaAccountWorkers.poisoned(instanceId).get() },
-            cleanupFailed = { blocked.add(instanceId); AbemaAccountWorkers.poisoned(instanceId).set(true) },
+            cleanupFailed = {
+                runCatching { android.util.Log.d("TachiaiAbemaAccount", "owner=INSTANCE_POISONED cause=ATTACH_ROLLBACK") }
+                blocked.add(instanceId); AbemaAccountWorkers.poisoned(instanceId).set(true)
+            },
             refresh = if (refresh) androidAbemaAccountAccessRefresh(context, AbemaReadinessTarget(instanceId, ownerProof)) else null)
     }
 }
@@ -406,16 +420,15 @@ class AbemaAccountAccessService : Service() {
             if (!ended.compareAndSet(false, true)) return
             lane.removeCallbacksAndMessages(this)
             attachment?.close(); lease = null
-            try { AbemaAccountWorkers.cancellation.execute {
+            try { AbemaSessionEndWorkers.executor.execute {
                 val began = SystemClock.elapsedRealtime()
-                var confirmed = false
-                while (SystemClock.elapsedRealtime() - began in 0 until AbemaAccountAccessIpc.IPC_MS) {
-                    // Creation can finish after cancellation; close that exact attachment too.
-                    attachment?.close()
-                    if (jobs.get() == 0 && (attachment?.cleanupConfirmed != false)) { confirmed = true; break }
-                    try { Thread.sleep(10) } catch (_: InterruptedException) { Thread.currentThread().interrupt(); break }
-                }
-                val receipt = confirmed
+                // Creation can finish after cancellation; close that exact attachment too.
+                val result = awaitAbemaSessionEnd(AbemaAccountAccessIpc.END_MS, SystemClock::elapsedRealtime,
+                    { Thread.sleep(10) }, { attachment?.close() }, { jobs.get() == 0 },
+                    { attachment?.cleanupConfirmed != false })
+                val receipt = result == AbemaSessionEnd.CONFIRMED
+                runCatching { android.util.Log.d("TachiaiAbemaAccount",
+                    abemaSessionEndLine(result, SystemClock.elapsedRealtime() - began)) }
                 if (!receipt) AndroidAbemaAccountAccessOwners.poison(request)
                 lane.post {
                     send(AbemaAccountAccessIpc.CLOSED, seq, mapOf("confirmed" to receipt))
@@ -426,6 +439,7 @@ class AbemaAccountAccessService : Service() {
                     } // Uncertainty retains the exact session/owner until process restart.
                 }
             } } catch (_: Throwable) {
+                runCatching { android.util.Log.d("TachiaiAbemaAccount", abemaSessionEndLine(AbemaSessionEnd.REJECTED, -1)) }
                 AndroidAbemaAccountAccessOwners.poison(request)
                 send(AbemaAccountAccessIpc.CLOSED, seq, mapOf("confirmed" to false))
             }

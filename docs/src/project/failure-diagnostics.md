@@ -1175,6 +1175,63 @@ the next wait returns `READY`. A close that stays blocked past the wait, a
 close that throws, and a transport cleanup failure still poison the instance,
 including after they later finish.
 
+## Account lease ends during early viewer preparation (#783) — 2026-11-27
+
+In the #772 emulator check, a Stop about 2–3 s after the viewer opened, while
+the feeds' ABEMA account check ran, ended in "Playback recovery required"
+(`FEED_CLEANUP_UNCONFIRMED`). ABEMA then stayed unusable until the app was
+force-stopped ([#783](https://github.com/altendky/tachiai/issues/783)). The
+second report's `ABEMA_ACCOUNT_CLEANUP_FAILED` came after the first, while
+the main process still held that poisoned instance. Every acquisition is
+refused as `CLEANUP_FAILED` from then until the main process ends.
+
+What the code shows:
+- Each feed's lease session in the main process ends by waiting for its own
+  work and its owner attachment to confirm cleanup. After a Stop during
+  acquisition, that includes the shared validation finishing. That
+  validation can be inside a store read or a route teardown, and neither can
+  be interrupted. In the #771 run on the same host that day, a store read held
+  its locks for 4.4 s.
+- The wait was bounded by `IPC_MS` (5 s). If it ran out, the session poisoned
+  the instance in the main process, even though the validation would have
+  finished.
+- The viewer's client waited the same 5 s for `CLOSED`, counted from before
+  the service's wait began. So a service end confirmed late inside its own
+  bound still reached the viewer as unconfirmed.
+- Session ends ran on the 2-thread pool that account readiness cancellation
+  shares, so the two feeds' ends and a cancelled readiness check could queue
+  behind each other.
+
+Now:
+- A session end waits up to `END_MS` (10 s) on its own thread.
+- The client waits `CLOSE_REPLY_MS` (12 s) for `CLOSED`, longer than the
+  service's bound.
+- Both stay inside the viewer's 20 s cleanup deadline.
+
+A wait that still runs out, an end that can't run, and any other unconfirmed
+cleanup still poison the instance until the main process ends, as before. A
+late finish never clears it.
+
+Closed lines under `TachiaiAbemaAccount` name each outcome. They carry no
+account, route or instance values:
+- Main process:
+  - `owner=SESSION_END result=… waitedMs=…`, once per lease session. `result`
+    is `CONFIRMED`, `JOBS_RUNNING`, `ATTACHMENT_UNCONFIRMED`, `INTERRUPTED`,
+    `CLOCK` or `REJECTED`.
+  - `owner=INSTANCE_POISONED cause=SESSION_END|TRANSPORT_CLEANUP|ATTACH_ROLLBACK`
+    when the main process poisons the instance.
+  - `owner=TRANSPORT_POISONED stage=OPEN_ROLLBACK|TEARDOWN|CLOSE part=…` for the
+    owned account transport. `part` is `BACKEND`, `CONSTRUCTION`,
+    `HTTP_OR_ROUTE`, `EGRESS` or `REQUEST_BUSY`.
+- Viewer: `client=CLEANUP_UNCONFIRMED cause=CLOSED_TIMEOUT|SERVICE_UNCONFIRMED|POISONED`.
+
+JVM tests cancel a two-consumer acquisition at each of its stages: every owner
+check, the profile request, the transport close and the transport cleanup
+check. Each ends with confirmed cleanup, an idle owner and a working next
+acquisition. Other tests cover the session end's wait: a validation that
+finishes after the old 5 s bound still confirms, while work that never
+finishes, a backward clock or an interruption does not.
+
 ## Collecting one device's evidence
 
 Verify the requested device before collecting. For the persistent emulator,

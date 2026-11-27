@@ -261,7 +261,13 @@ internal class AndroidAbemaAccountAccessClient(context: Context, instanceId: Str
     fun awaitCleanup(): Boolean {
         if (!worker()) return false
         close()
-        val confirmed = await(cleanup, AbemaAccountAccessIpc.IPC_MS, false) && cleanupConfirmed && !poisoned.get()
+        // Longer than the service's own END_MS bound for CLOSED (#783).
+        val closed = await(cleanup, AbemaAccountAccessIpc.CLOSE_REPLY_MS, false)
+        val confirmed = closed && cleanupConfirmed && !poisoned.get()
+        if (!confirmed) runCatching {
+            android.util.Log.d("TachiaiAbemaAccount", "client=CLEANUP_UNCONFIRMED cause=" +
+                if (!closed) "CLOSED_TIMEOUT" else if (!cleanupConfirmed) "SERVICE_UNCONFIRMED" else "POISONED")
+        }
         if (!confirmed) { poisoned.set(true); if (retainedOnce.compareAndSet(false, true)) retained.add(this) }
         return confirmed
     }

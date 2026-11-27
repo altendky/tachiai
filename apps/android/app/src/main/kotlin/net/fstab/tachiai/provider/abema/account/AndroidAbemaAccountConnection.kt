@@ -232,8 +232,11 @@ internal class OwnedAbemaAccountTransport(private val profile: ConnectionProfile
                 // rollback. Its returned backend still has an owned, single receipt.
                 try { egress?.cancel() } catch (_: Throwable) { preparation.recordCleanupFailure() }
                 val partialClosed = if (route == null) backendClose?.await() != false else true
-                val confirmed = partialClosed && !fatalConstruction && closeAbemaAccountOwnedResources(preparation, transport, route) &&
-                    runCatching { egress?.isCleanupConfirmed() != false }.getOrDefault(false)
+                val ownedClosed = partialClosed && !fatalConstruction && closeAbemaAccountOwnedResources(preparation, transport, route)
+                val confirmed = ownedClosed && runCatching { egress?.isCleanupConfirmed() != false }.getOrDefault(false)
+                if (!confirmed) logAbemaTransportPoisoned("OPEN_ROLLBACK", when {
+                    !partialClosed -> "BACKEND"; fatalConstruction -> "CONSTRUCTION"; !ownedClosed -> "HTTP_OR_ROUTE"; else -> "EGRESS"
+                })
                 synchronized(lock) {
                     if (!confirmed) { closed = true; poisoned = true }
                     else if (preparing === preparation) { preparing = null; activeEgress = null }
@@ -252,8 +255,9 @@ internal class OwnedAbemaAccountTransport(private val profile: ConnectionProfile
         // Retire bound DNS admission before HTTP cleanup waits for its caller.
         // Actual resolver completion remains a separate receipt.
         try { owned.egress?.cancel() } catch (_: Throwable) { owned.preparation.recordCleanupFailure() }
-        val confirmed = closeAbemaAccountOwnedResources(owned.preparation, owned.transport, owned.route) &&
-            runCatching { owned.egress?.isCleanupConfirmed() != false }.getOrDefault(false)
+        val ownedClosed = closeAbemaAccountOwnedResources(owned.preparation, owned.transport, owned.route)
+        val confirmed = ownedClosed && runCatching { owned.egress?.isCleanupConfirmed() != false }.getOrDefault(false)
+        if (!confirmed) logAbemaTransportPoisoned("TEARDOWN", if (!ownedClosed) "HTTP_OR_ROUTE" else "EGRESS")
         synchronized(lock) {
             if (!confirmed) { closed = true; poisoned = true } else activeEgress = null
         }
@@ -316,6 +320,7 @@ internal class OwnedAbemaAccountTransport(private val profile: ConnectionProfile
             !busy
         }
         if (!idle) {
+            logAbemaTransportPoisoned("CLOSE", "REQUEST_BUSY")
             synchronized(lock) { poisoned = true }; cleanupFailed()
             throw AbemaAccountException(AbemaAccountFailure.CLEANUP_FAILED)
         }
@@ -323,6 +328,11 @@ internal class OwnedAbemaAccountTransport(private val profile: ConnectionProfile
         if (synchronized(lock) { poisoned }) throw AbemaAccountException(AbemaAccountFailure.CLEANUP_FAILED)
     }
     override fun toString() = "OwnedAbemaAccountTransport(redacted)"
+}
+// Which owned account cleanup poisoned its instance (#783), as one closed line.
+internal fun abemaTransportPoisonedLine(stage: String, part: String) = "owner=TRANSPORT_POISONED stage=$stage part=$part"
+private fun logAbemaTransportPoisoned(stage: String, part: String) {
+    runCatching { android.util.Log.d("TachiaiAbemaAccount", abemaTransportPoisonedLine(stage, part)) }
 }
 // Used by the actual wrapper, with fake route owners in provider-free tests.
 // Unconfirmed HTTP cleanup cannot reach route/backend release at all.

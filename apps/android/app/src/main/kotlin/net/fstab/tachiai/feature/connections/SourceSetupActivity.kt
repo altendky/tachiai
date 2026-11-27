@@ -48,7 +48,7 @@ class SourceSetupActivity : ComponentActivity() {
         worker.execute {
             val result = runCatching {
                 val setup = checkNotNull(settings.read()[source])
-                val summaries = connectionProfileStore(this).summaries()
+                val summaries = connectionProfileStore(this).summaries(publicKeys = false)
                 setup to summaries
             }
             runOnUiThread {

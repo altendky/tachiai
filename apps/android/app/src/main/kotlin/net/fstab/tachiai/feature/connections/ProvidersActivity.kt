@@ -47,7 +47,7 @@ class ProvidersActivity : ComponentActivity() {
             val result = runCatching {
                 runBlocking { ProviderPreferenceWrites.awaitAll() }
                 val providers = providerInstanceStore(this).read { legacyProviderSettings(this) }
-                val routes = connectionProfileStore(this).summaries()
+                val routes = connectionProfileStore(this).summaries(publicKeys = false)
                 providers to routes
             }
             runOnUiThread {

@@ -199,6 +199,21 @@ pending fault. Like the route fault trigger, it requires `DUMP`, accepts only
 the shell or root UID, is disabled in the inspection build, and is absent from
 release builds.
 
+The viewer's restart recovery has a matching debug trigger
+([#784](https://github.com/altendky/tachiai/issues/784)):
+
+```text
+adb shell content call --uri content://net.fstab.tachiai.debug.viewer-cleanup-fault --method poison-next
+adb shell content call --uri content://net.fstab.tachiai.debug.viewer-cleanup-fault --method clear
+```
+
+`poison-next` makes the next viewer that closes in the player process report
+its cleanup as unconfirmed, so the picker shows "Playback recovery required"
+with Restart. The real cleanup still runs. Restarting the player ends that
+process, which also drops any pending fault. `clear` only disarms a pending
+fault. It has the same `DUMP`, shell-or-root, inspection-build and release-build
+limits as the other triggers.
+
 Account transactions stay on their chosen route. During playback, only
 [automatic route recovery](#automatic-route-recovery) moves feeds to another
 configured route. ABEMA account settings use a compact
@@ -628,6 +643,15 @@ It does not clear saved routes, provider instances, authorization, cached bundle
 or diagnostics. The next fresh prototype restores selected, cleared and stale
 instance choices without starting playback. A malformed checkpoint leaves both
 feeds unassigned and requires recovery rather than selecting default identities.
+While the old player process ends, the relay shows "Restarting the player…"
+the same way as the main-process restart above: the process ends only once the
+relay covers the picker, and the message stays at least half a second once it
+appears ([#784](https://github.com/altendky/tachiai/issues/784)). The picker
+opens without a starting page, so the message stays until the new picker draws
+instead of a blank page; a launcher start keeps its splash until then. Until saved
+setup is first read, the picker shows no streams list or setup messages, so a
+fresh picker never flashes "No configured streams" or a removed-item message
+for streams it has not loaded yet.
 Checkpoint or main-menu launch failure keeps the process alive and playback
 blocked with fixed safe feedback and a bounded `RECOVERY_RESTART` diagnostic
 observation. Neither raw exception messages nor provider

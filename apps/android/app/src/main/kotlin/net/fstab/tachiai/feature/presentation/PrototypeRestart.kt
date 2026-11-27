@@ -11,6 +11,7 @@ import net.fstab.tachiai.presentation.ConfiguredFeedAssignments
 
 // Terminate only this owned prototype process after a durable picker checkpoint
 // and successful launch of the separate main process. Never force-stop the app.
+// The process ends only once the relay covers this Activity (#784).
 internal fun restartPrototypeProcess(activity: Activity, cached: Boolean, assignments: ConfiguredFeedAssignments) {
     if (Build.VERSION.SDK_INT < 28) error("Recovery is unavailable on this Android version")
     performPrototypeRestart(Application.getProcessName(), activity.packageName, cached,
@@ -25,6 +26,7 @@ internal fun restartPrototypeProcess(activity: Activity, cached: Boolean, assign
             activity.startActivity(destination)
         },
         finish = activity::finish,
+        afterCovered = { end -> whenCovered(activity, end) },
         flush = { FailureDiagnostics.flush(RESTART_JOURNAL_FLUSH_MS) },
         terminate = { Process.killProcess(Process.myPid()) })
 }
@@ -33,13 +35,16 @@ internal fun restartPrototypeProcess(activity: Activity, cached: Boolean, assign
 internal const val RESTART_JOURNAL_FLUSH_MS = 1_000L
 
 internal fun performPrototypeRestart(processName: String, packageName: String, cached: Boolean,
-    checkpoint: () -> Unit, launch: () -> Unit, finish: () -> Unit, flush: () -> Unit, terminate: () -> Unit) {
+    checkpoint: () -> Unit, launch: () -> Unit, finish: () -> Unit, afterCovered: (() -> Unit) -> Unit,
+    flush: () -> Unit, terminate: () -> Unit) {
     val suffix = if (cached) ":prototype_cached_player" else ":prototype_player"
     check(processName == packageName + suffix) { "Recovery requires the dedicated prototype process" }
     checkpoint()
     launch()
     finish()
-    // A bounded diagnostic wait; it can neither fail nor prevent the restart.
-    try { flush() } catch (_: Exception) { /* Diagnostics cannot replace recovery. */ }
-    terminate()
+    afterCovered {
+        // A bounded diagnostic wait; it can neither fail nor prevent the restart.
+        try { flush() } catch (_: Exception) { /* Diagnostics cannot replace recovery. */ }
+        terminate()
+    }
 }

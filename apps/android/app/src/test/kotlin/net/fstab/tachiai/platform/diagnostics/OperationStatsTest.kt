@@ -18,6 +18,21 @@ class OperationStatsTest {
         assertEquals("owner=CHECK_STATS windowMs=1500 dispatched=1", stats.drain(31_500))
     }
 
+    @Test fun peaksKeepTheWindowMaximumAndForcedDrainEmitsEarly() {
+        val stats = OperationStats("journal=FAILURE_WRITER", intervalMs = 30_000)
+        assertNull(stats.drain(0, force = true))
+        stats.count("queued", 1_000)
+        stats.peak("queueDepth", 3, 1_000)
+        stats.peak("queueDepth", 7, 1_100)
+        stats.peak("queueDepth", 2, 1_200)
+        stats.time("flush", 40, 1_300)
+        assertNull(stats.drain(2_000))
+        assertEquals("journal=FAILURE_WRITER windowMs=1000 queued=1 queueDepth=7 flush=1 flushMs=40 flushMaxMs=40",
+            stats.drain(2_000, force = true))
+        assertNull(stats.drain(40_000, force = true))
+        assertThrows(IllegalArgumentException::class.java) { stats.peak("queue depth", 1, 0) }
+    }
+
     @Test fun onlyClosedNamesAreAccepted() {
         for (name in listOf("", "owner=", "owner=check", "Owner=CHECK", "owner=CHECK user"))
             assertThrows(IllegalArgumentException::class.java) { OperationStats(name) }

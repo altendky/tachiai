@@ -83,6 +83,8 @@ import net.fstab.tachiai.presentation.FeedAutoRecoveryState
 import net.fstab.tachiai.presentation.FeedAutoRecoveryRequest
 import net.fstab.tachiai.presentation.FeedAutoRecoveryDecision
 import net.fstab.tachiai.presentation.ViewerStartupStatus
+import net.fstab.tachiai.presentation.ViewerBackAction
+import net.fstab.tachiai.presentation.viewerBackAction
 import net.fstab.tachiai.platform.diagnostics.FailureCategory
 import net.fstab.tachiai.platform.media.NativePlaybackDiagnosticSnapshot
 import net.fstab.tachiai.platform.media.NativePlaybackTransportFailure
@@ -276,13 +278,16 @@ open class PrototypeActivity : ComponentActivity() {
     private var cachedRun: CachedViewerCleanupCoordinator.Run? = null
     private var selection: ConfiguredPlaybackSelection? = null
     private val accountReadiness by lazy { AbemaAccountReadiness(this) }
-    private var checkingAccount = false
+    private var checkingAccount by mutableStateOf(false)
     @Volatile private var accountCheckRevision = 0L
     private val startupLock = Any()
     private var startupScopes = emptyMap<String, ProviderRouteStartup>()
     private var startupTwitchValidation = emptyMap<String, TwitchCatalogReadOnlyValidation>()
-    private var pendingAccountSelection: ConfiguredFeedAssignments? = null
+    private var pendingAccountSelection by mutableStateOf<ConfiguredFeedAssignments?>(null)
     private var pendingAccountPlan: ProviderInstanceRoutePlan? = null
+    // Watch is checking provider connections or waiting to resume that check;
+    // no viewer exists yet (#772).
+    private val startingPlayback get() = checkingAccount || pendingAccountSelection != null
     private var pickerAssignments = restoreConfiguredFeedAssignments(false, null, null)
     private var pickerSelectionRestore = ViewerSelectionRestore(false)
     private var persistRestoredSelection = false
@@ -484,8 +489,13 @@ open class PrototypeActivity : ComponentActivity() {
         }
         net.fstab.tachiai.platform.web.DeveloperAccess.configureWebInspection()
         onBackPressedDispatcher.addCallback(this) {
-            if (viewer?.handleBack() == true) return@addCallback
-            if (budget != null) confirmStopToPicker() else finish()
+            when (viewerBackAction(viewer?.handleBack() == true, budget != null,
+                viewer?.visibility == View.VISIBLE, startingPlayback)) {
+                ViewerBackAction.HANDLED -> Unit
+                ViewerBackAction.CONFIRM_STOP -> confirmStopToPicker()
+                ViewerBackAction.STOP -> stopToPicker("Playback stopped.")
+                ViewerBackAction.FINISH -> finish()
+            }
         }
         showPicker(null)
     }
@@ -507,6 +517,8 @@ open class PrototypeActivity : ComponentActivity() {
         // An asynchronous startup status cannot replace a viewer that still
         // owns players. Intentional navigation disposes that viewer first.
         if (budget != null) return
+        // A startup that ended without a viewer leaves nothing to stop.
+        if (!startingPlayback) exitConfirmation?.let { exitConfirmation = null; it.dismiss() }
         val previous = root
         root = null; progress = null; returnButton = null
         ViewerMainSteps.time("pickerOrientation") { requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED }
@@ -527,7 +539,7 @@ open class PrototypeActivity : ComponentActivity() {
             obsoleteSetup = obsoleteSetup, onResetStreamSettings = ::resetStreamSettings,
             playbackAvailable = playbackAvailable, recoveryMessage = recoveryMessage,
             onRecovery = if (hasRecovery) ({ showRecoveryDialog(true) }) else null,
-            onWatch = ::watch) } } }
+            startingPlayback = startingPlayback, onWatch = ::watch) } } }
     }
 
     private fun updateRecoveryState() {
@@ -2780,9 +2792,11 @@ open class PrototypeActivity : ComponentActivity() {
     // Leaving the feeds viewer stops playback, so the user confirms it first
     // (#617). Keep watching is focused, and Back on the dialog dismisses it.
     // App-initiated stops (failures, cleanup, deadlines) call stopToPicker
-    // directly. Before the viewer shows, leaving needs no confirmation.
+    // directly. While Watch still checks provider connections, before any
+    // viewer exists, Back asks the same (#772). The preparation page opened
+    // from Status leaves without asking.
     private fun confirmStopToPicker() {
-        if (viewer?.visibility != View.VISIBLE) { stopToPicker("Playback stopped."); return }
+        if (budget != null && viewer?.visibility != View.VISIBLE) { stopToPicker("Playback stopped."); return }
         if (exitConfirmation != null || isFinishing || isDestroyed) return
         exitConfirmation = AlertDialog.Builder(this)
             .setTitle("Stop playback?")
@@ -2799,6 +2813,7 @@ open class PrototypeActivity : ComponentActivity() {
     // Main-thread steps are timed as closed counters (#769).
     private fun stopToPicker(message: String) { ViewerMainSteps.time<Unit>("stop") {
         exitConfirmation?.let { exitConfirmation = null; it.dismiss() }
+        cancelStartingPlayback()
         setPlaybackIntent(false, PlaybackHealthIntent.STOP)
         dispose()
         val result = message + if (cleanupFailed) " Playback cleanup reported a failure." else ""
@@ -2809,6 +2824,15 @@ open class PrototypeActivity : ComponentActivity() {
             ViewerMainSteps.time("stopRefreshSetup") { refreshSetup() }
         } else resumeMessage = result
     } }
+
+    // Stopping while Watch still checks provider connections abandons that
+    // check, as leaving the app does; dispose retires its startup scopes.
+    private fun cancelStartingPlayback() {
+        if (!startingPlayback) return
+        accountCheckRevision++; checkingAccount = false
+        pendingAccountSelection = null; pendingAccountPlan = null
+        accountReadiness.cancelCheck()
+    }
 
     private fun dispose(retainStartups: Boolean = false) { ViewerMainSteps.time<Unit>("dispose") {
         // A route switch's worker registers no startup scope after this (#271).

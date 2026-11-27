@@ -24,8 +24,11 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.Tachiai"
         android:usesCleartextTraffic="false">
+        <!-- The prototype theme gives the starting window the picker's light or
+             dark background (#773); onCreate restores Theme.Tachiai. -->
         <activity
             android:name=".MainActivity"
+            android:theme="@style/Theme.Tachiai.Prototype"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

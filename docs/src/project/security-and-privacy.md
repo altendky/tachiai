@@ -86,7 +86,10 @@ on the device:
 
 - Provider titles, group names and schedule titles are translated on the device.
   Text is not sent to a translation service.
-- Nothing runs while translation is off; it is off by default. Turning it on
+- Nothing runs while every provider's **Translate provider text** switch is
+  off; each is off by default
+  ([#765](https://github.com/altendky/tachiai/issues/765) replaced the former
+  global switch). Turning one on
   allows a one-time model download from Google (`dl.google.com`), about 30 MB
   per source language, through Android's DownloadManager on the system network.
   Provider routes are not used for it.
@@ -122,8 +125,9 @@ on the device:
   [protected media](#protected-media-handling--clarified-2026-11-23)).
   Replacing ML Kit is a later consideration in
   [#754](https://github.com/altendky/tachiai/issues/754).
-- The stored preference holds only the on/off switch and per-instance Source
-  language choices, in its own encrypted no-backup record.
+- The stored preference holds only per-instance switches and Source language
+  choices, in its own encrypted no-backup record. Removing a provider instance
+  removes its values.
 - Search, matching, saved items and identities keep the original text.
 
 ML Kit's usage terms limit TV use and ask for attribution. See

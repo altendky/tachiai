@@ -299,6 +299,8 @@ open class PrototypeActivity : ComponentActivity() {
     private var activeConfiguredSources = emptyList<ConfiguredSource?>()
     private var activeInstances: List<ProviderInstance> = defaultProviderInstances()
     private var setupReady by mutableStateOf(false)
+    // Saved setup has been read (or failed to read) at least once (#784).
+    private var setupLoaded by mutableStateOf(false)
     private var setupMessage by mutableStateOf<String?>(null)
     private var obsoleteSetup by mutableStateOf(false)
     private var setupRevision = 0L
@@ -539,7 +541,7 @@ open class PrototypeActivity : ComponentActivity() {
             obsoleteSetup = obsoleteSetup, onResetStreamSettings = ::resetStreamSettings,
             playbackAvailable = playbackAvailable, recoveryMessage = recoveryMessage,
             onRecovery = if (hasRecovery) ({ showRecoveryDialog(true) }) else null,
-            startingPlayback = startingPlayback, onWatch = ::watch) } } }
+            startingPlayback = startingPlayback, setupLoaded = setupLoaded, onWatch = ::watch) } } }
     }
 
     private fun updateRecoveryState() {
@@ -2883,6 +2885,8 @@ open class PrototypeActivity : ComponentActivity() {
         ViewerMainSteps.time("disposeRoutes") { releaseRoutes() }
         if (!diagnostics.cleanupAll(FailureStage.AUDIO_FOCUS_CLOSE) { focus?.close() }) cleanupFailed = true
         focus = null
+        // Debug builds only (#784): a shell-armed fault reports this viewer's cleanup as unconfirmed.
+        if (budget != null && DebugViewerCleanupFaults.take()) cleanupFailed = true
         budget = null
         disposing = false
         updateRecoveryState()
@@ -3031,6 +3035,7 @@ open class PrototypeActivity : ComponentActivity() {
                         rememberPickerAssignments(pickerAssignments)
                     persistRestoredSelection = false
                 }
+                setupLoaded = true
                 result.fold(onSuccess = {
                     providerInstances = it.instances
                     configuredSources = it.sources; qualityDefaults = it.sources.associate { source -> source.choice to source.quality }

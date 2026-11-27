@@ -110,7 +110,7 @@
         </activity>
         <activity
             android:name=".feature.presentation.CachedPrototypeActivity"
-            android:theme="@style/Theme.Tachiai.Prototype"
+            android:theme="@style/Theme.Tachiai.Prototype.Picker"
             android:exported="true"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|uiMode|keyboard|keyboardHidden|navigation|density|fontScale"
             android:process=":prototype_cached_player" />

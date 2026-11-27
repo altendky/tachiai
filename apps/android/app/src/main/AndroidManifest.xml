@@ -116,6 +116,13 @@
             android:theme="@style/Theme.Tachiai.Prototype"
             android:exported="false"
             android:excludeFromRecents="true" />
+        <!-- Main-process recovery relay (#764): outlives the main process it restarts. -->
+        <activity
+            android:name=".feature.presentation.MainProcessRestartActivity"
+            android:theme="@style/Theme.Tachiai.Prototype"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:process=":main_restart" />
         <service
             android:name=".provider.abema.AbemaEpisodeMetadataService"
             android:exported="false"

@@ -15,6 +15,7 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
 import net.fstab.tachiai.feature.presentation.TachiaiPrototypeTheme
+import net.fstab.tachiai.feature.presentation.restartMainProcess
 import net.fstab.tachiai.feature.presentation.RemoteButton as Button
 import net.fstab.tachiai.feature.presentation.RemoteTextButton as TextButton
 import net.fstab.tachiai.feature.presentation.tvFocusGroup
@@ -47,6 +48,8 @@ class ManageStreamsActivity : ComponentActivity() {
     private var checkingAccount by mutableStateOf(false)
     private var renewingAccount by mutableStateOf(false) // Read only while checkingAccount.
     private var message by mutableStateOf<String?>(null)
+    private var cleanupRestart by mutableStateOf(false)
+    private var restartingForCleanup by mutableStateOf(false)
     @Volatile private var revision = 0L
     @Volatile private var resumed = false
     private var readJob: Job? = null
@@ -144,7 +147,10 @@ class ManageStreamsActivity : ComponentActivity() {
                 Text(if (savingWhileLeaving) "Saving configured streams before returning…" else message ?:
                     if (checkingAccount) (if (renewingAccount) ABEMA_ACCOUNT_RENEWING_MESSAGE else ABEMA_ACCOUNT_CHECKING_MESSAGE)
                     else "Reading configured streams…")
-                if (!reading) Button(onClick = ::readOwner) { Text("Retry") }
+                if (!reading) {
+                    if (cleanupRestart) Button(onClick = ::restartForCleanup, enabled = !restartingForCleanup) { Text("Restart") }
+                    else Button(onClick = ::readOwner) { Text("Retry") }
+                }
                 }
             }
             }
@@ -193,7 +199,7 @@ class ManageStreamsActivity : ComponentActivity() {
         controller?.close()
         controller = null
         detailOwnerProof = null
-        reading = true; checkingAccount = false; message = null
+        reading = true; checkingAccount = false; message = null; cleanupRestart = false
         startupStatus = "Waiting for route"
         readJob = scope.launch {
             try {
@@ -243,12 +249,21 @@ class ManageStreamsActivity : ComponentActivity() {
                     message = "Choose a route to use this provider."
                     return@launch
                 }
+                val waitBegan = android.os.SystemClock.elapsedRealtime()
                 val cleanup = withContext(Dispatchers.IO) { ProviderStartupScopeCleanup.awaitReady(id,
                     android.os.SystemClock.elapsedRealtime() + 45_000L, { resumed && revision == current }) }
                 if (!resumed || revision != current) return@launch
+                val notice = providerCleanupNotice(cleanup)
                 if (cleanup != ProviderStartupCleanupAdmission.READY) {
-                    reading = false; message = "The previous connection has not finished closing. Retry shortly."
-                    startupStatus = "Waiting for connection cleanup"
+                    // Closed gate result (#764): no instance, route or provider value.
+                    ProviderStartupScopeCleanup.event("screen=${if (providerDetails) "PROVIDER_DETAILS" else "MANAGE_STREAMS"} " +
+                        "service=${routeScope.configuredInstance.service.name} admission=${cleanup.name} " +
+                        "waitedMs=${(android.os.SystemClock.elapsedRealtime() - waitBegan).coerceIn(0, 60_000)}")
+                    reading = false
+                    if (notice != null) {
+                        message = notice.message; startupStatus = notice.status
+                        cleanupRestart = notice.action == ProviderCleanupAction.RESTART
+                    }
                     return@launch
                 }
                 val startup = androidProviderRouteStartup(this@ManageStreamsActivity, routeScope) { progress ->
@@ -363,6 +378,28 @@ class ManageStreamsActivity : ComponentActivity() {
                 }
             } finally {
                 if (revision == current) checkingAccount = false
+            }
+        }
+    }
+    // #764: an unconfirmed startup cleanup blocks this provider until the main
+    // process restarts. Pending saves for this instance finish first.
+    private fun restartForCleanup() {
+        if (!cleanupRestart || restartingForCleanup) return
+        restartingForCleanup = true
+        val id = selectedInstanceId
+        scope.launch {
+            try {
+                if (id != null) {
+                    StreamManagementWrites.await(id)
+                    ProviderPreferenceWrites.await(id)
+                    TwitchCatalogConnectionWrites.await(id)
+                }
+                restartMainProcess(this@ManageStreamsActivity)
+            } catch (error: CancellationException) { restartingForCleanup = false; throw error }
+            catch (error: Exception) {
+                diagnostics.report(FailureStage.RECOVERY_RESTART, error)
+                restartingForCleanup = false
+                if (!isDestroyed) message = PROVIDER_CLEANUP_RESTART_FAILED_MESSAGE
             }
         }
     }

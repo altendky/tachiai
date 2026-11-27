@@ -1024,6 +1024,64 @@ its load is cancelled, concurrent reporters while the writer is blocked, batch
 equivalence, a full queue, storage failures, a bounded flush, and records that
 are durable when a recovery restart terminates the process.
 
+## Startup cleanup gate (#764) — 2026-11-26
+
+On a Pixel 6, ABEMA's provider details stayed on "Waiting for connection
+cleanup" after an account check ended in `CATALOG_AUTH_REQUEST`, and Retry
+couldn't clear it ([#764](https://github.com/altendky/tachiai/issues/764)).
+A screen that starts a provider connection retires its startup scope when it
+pauses or reloads. The next start waits until every retired scope for that
+provider instance confirms cleanup. A scope that doesn't confirm poisons the
+instance until the process ends, and every later wait returns
+`CLEANUP_UNCONFIRMED` at once.
+
+The stuck scope's remaining lease was the admitted ABEMA channel catalog. When
+provider details pauses, it closes its stream controller first, and the
+controller closes that catalog on an IO worker. The scope's cleanup worker then
+found the catalog already closing and read its close receipt once, before that
+close had finished. A close still running counted as unconfirmed. Leaving
+during an account check also cancels that check, which is journaled as
+`CATALOG_AUTH_REQUEST`. The catalog's close then also releases its account
+attachments, which may widen the window; that part is inferred from code, not
+seen on the device. The account check's own failure path doesn't hold a
+startup lease.
+
+The catalog's close receipt now waits up to 3 s for a close already running on
+another thread, and for a cancelled channel request to release its route. A
+close that doesn't finish in time, a close that throws, or a request whose
+cleanup failed still leaves the receipt false, and the instance stays
+poisoned. A late finish never turns that receipt true. The Twitch startup
+connection closes its own resources before reading its receipt, so it doesn't
+have this race. Its account actions use a separate connection, and they reach
+the startup scope only through a cleanup failure.
+
+Closed lines under `TachiaiStartupCleanup` record the gate. No instance, route,
+account or provider value is logged:
+
+- `startupCleanup=POISONED cause=… [scope=…] retired=… poisoned=…`, once for
+  each retired scope that becomes poisoned. `cause` is `SCOPE_UNCONFIRMED` (the
+  scope reported its own unconfirmed cleanup), `CLOSE_UNCONFIRMED` (its close
+  finished without confirming), `CANCEL_FAILED`, `QUEUE_REJECTED` (the
+  cleanup worker refused the close) or `DEBUG_FAULT` (the debug
+  `startup-cleanup-fault` trigger). `scope` gives the scope's first reason:
+  `LEASE_CLEANUP` (a lease's close didn't confirm), `LEASE_CANCEL` (a lease's
+  cancellation signal failed), `ATTEMPT` (a startup attempt reported
+  unconfirmed cleanup), `LATE_LEASE` (a resource arrived after its attempt had
+  ended) or `QUARANTINED` (the instance was already poisoned). `retired` and
+  `poisoned` count that instance's retained scopes.
+- `screen=PROVIDER_DETAILS|MANAGE_STREAMS service=… admission=… waitedMs=…`,
+  when the screen's wait returns `CLEANUP_UNCONFIRMED` or `DEADLINE` (45 s)
+  instead of `READY`. `service` is the provider type, such as `ABEMA`. For
+  `CLEANUP_UNCONFIRMED`, the page offers a restart
+  ([main flow and settings](prototype-ux.md#main-flow-and-settings--october-16)); a failed restart is
+  journaled as `RECOVERY_RESTART`.
+
+JVM tests close the catalog on another thread while the scope retires, and
+cancel a channel request that releases its route afterwards. Both confirm, and
+the next wait returns `READY`. A close that stays blocked past the wait, a
+close that throws, and a transport cleanup failure still poison the instance,
+including after they later finish.
+
 ## Collecting one device's evidence
 
 Verify the requested device before collecting. For the persistent emulator,

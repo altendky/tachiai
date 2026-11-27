@@ -159,6 +159,35 @@ that also opens route import. Its existing heading shows startup progress,
 the effective route or exhaustion in a fixed single-line area. Startup uses an
 actual required provider read before keeping a route for the session; only
 classified transport availability failures can try another configured choice.
+Before startup, provider details and Manage streams wait up to 45 s for the
+provider's previous connection to close. If that wait runs out, the page says
+"The previous connection has not finished closing. Retry shortly." with Retry,
+and the status reads Waiting for connection cleanup. If the previous
+connection's cleanup could not be confirmed, the provider stays blocked until
+Tachiai restarts, so Retry would not help. The page then says "Connection
+cleanup could not be confirmed. Restart Tachiai before using this provider
+again. Saved app data will be kept." with Restart, and the status reads
+Connection cleanup unconfirmed. Restart finishes pending saves for that
+provider and shows "Restarting Tachiai…" while the main process ends. Tachiai
+then reopens at the main menu. If the restart can't be confirmed, the relay
+says "Tachiai could not be restarted safely. Saved app data has been kept."
+with Check again and Close. This is the viewer's restart recovery applied to
+the main process (user decision, 2026-11-26,
+[#764](https://github.com/altendky/tachiai/issues/764)), and it is the same on
+phone and TV. Debug builds can force this state from the shell:
+
+```text
+adb shell content call --uri content://net.fstab.tachiai.debug.startup-cleanup-fault --method poison-next
+adb shell content call --uri content://net.fstab.tachiai.debug.startup-cleanup-fault --method clear
+```
+
+`poison-next` makes the next startup scope retired in the main process (for
+example, by leaving provider details) block its provider, as an unconfirmed
+cleanup would. The real scope still closes normally. `clear` only disarms a
+pending fault. Like the route fault trigger, it requires `DUMP`, accepts only
+the shell or root UID, is disabled in the inspection build, and is absent from
+release builds.
+
 Account transactions stay on their chosen route. During playback, only
 [automatic route recovery](#automatic-route-recovery) moves feeds to another
 configured route. ABEMA account settings use a compact

@@ -59,6 +59,40 @@ class ProviderStartupScopeCleanupTest {
         assertTrue(registry.isReady(otherId))
     }
 
+    @Test fun eachPoisonedRetirementLogsItsFirstClosedCauseOnlyOnce() {
+        val queue = Queue(); val lines = mutableListOf<String>()
+        val registry = ProviderStartupCleanupRegistry(queue, lines::add) { 100 }
+        registry.retire(id, Resource()); queue.drain()
+        assertEquals(emptyList<String>(), lines)
+        registry.retire(id, Resource(confirms = false)); queue.drain()
+        registry.retire(id, Resource(cancelFails = true, confirms = false)); queue.drain()
+        assertEquals(listOf("startupCleanup=POISONED cause=CLOSE_UNCONFIRMED retired=1 poisoned=1",
+            "startupCleanup=POISONED cause=CANCEL_FAILED retired=2 poisoned=2"), lines)
+        val rejected = mutableListOf<String>()
+        ProviderStartupCleanupRegistry(Executor { throw RejectedExecutionException("fixture") }, rejected::add) { 100 }
+            .retire(otherId, Resource())
+        assertEquals(listOf("startupCleanup=POISONED cause=QUEUE_REJECTED retired=1 poisoned=1"), rejected)
+        assertTrue((lines + rejected).none { it.contains(id) || it.contains(otherId) })
+    }
+
+    @Test fun debugFaultPoisonsOnlyItsInstanceAndArmsOnce() {
+        val queue = Queue(); val lines = mutableListOf<String>()
+        val registry = ProviderStartupCleanupRegistry(queue, lines::add) { 100 }
+        registry.poisonForDebug(id)
+        assertEquals(ProviderStartupCleanupAdmission.CLEANUP_UNCONFIRMED, registry.awaitReady(id, 200) { true })
+        assertTrue(registry.isPoisoned(id)); assertTrue(registry.isReady(otherId))
+        assertEquals(listOf("startupCleanup=POISONED cause=DEBUG_FAULT retired=1 poisoned=1"), lines)
+        if (!net.fstab.tachiai.BuildConfig.DEBUG) {
+            assertEquals(DebugStartupCleanupFaultResult.UNAVAILABLE, DebugStartupCleanupFaults.arm())
+            assertFalse(DebugStartupCleanupFaults.take()); return
+        }
+        assertEquals(DebugStartupCleanupFaultResult.ARMED, DebugStartupCleanupFaults.arm())
+        assertTrue(DebugStartupCleanupFaults.take()); assertFalse(DebugStartupCleanupFaults.take())
+        DebugStartupCleanupFaults.arm()
+        assertEquals(DebugStartupCleanupFaultResult.CLEARED, DebugStartupCleanupFaults.clear())
+        assertFalse(DebugStartupCleanupFaults.take())
+    }
+
     @Test fun allRetirementsForOneInstanceMustConfirmBeforeAnotherStartupCanPass() {
         val queue = Queue(); val registry = ProviderStartupCleanupRegistry(queue) { 100 }
         registry.retire(id, Resource()); registry.retire(id, Resource())

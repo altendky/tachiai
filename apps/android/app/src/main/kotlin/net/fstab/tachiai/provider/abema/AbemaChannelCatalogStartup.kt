@@ -1,6 +1,8 @@
 package net.fstab.tachiai.provider.abema
 
 import android.content.Context
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import net.fstab.tachiai.platform.network.*
@@ -42,11 +44,14 @@ internal class AbemaChannelStartupCandidate(val catalog: ProviderCatalog, val ob
 // adapter cursor stays in the retained catalog; another operation discards this
 // one-shot page so a stale continuation can never be resurrected.
 internal class PreparedAbemaChannelCatalog(private val delegate: ProviderCatalog,
-    private val observation: AbemaChannelStartupObservation) : ProviderCatalog by delegate, ProviderStartupLease {
+    private val observation: AbemaChannelStartupObservation,
+    private val cleanupWaitMs: Long = PREPARED_ABEMA_CATALOG_CLEANUP_WAIT_MS) : ProviderCatalog by delegate, ProviderStartupLease {
+    init { require(cleanupWaitMs in 0..10_000) }
     private val first = AtomicReference<CatalogPage?>(null)
     private val closed = AtomicBoolean()
-    private val closeCompleted = AtomicBoolean()
+    private val closeDone = CountDownLatch(1)
     private val failedClose = AtomicBoolean()
+    private val receipt = AtomicReference<Boolean?>(null)
     fun retain(page: CatalogPage) { check(first.compareAndSet(null, page)) }
     override fun browse(query: CatalogQuery): CatalogResult<CatalogPage> {
         if (closed.get()) return CatalogResult.Failure(CatalogFailure.ACCESS_REQUIRED)
@@ -64,17 +69,47 @@ internal class PreparedAbemaChannelCatalog(private val delegate: ProviderCatalog
         first.set(null)
         if (closed.compareAndSet(false, true)) try { delegate.close() } catch (_: Throwable) {
             failedClose.set(true); throw java.io.IOException("Catalog cleanup remains unconfirmed")
-        } finally { closeCompleted.set(true) }
+        } finally { closeDone.countDown() }
     }
-    override fun closeAndConfirm(): Boolean { runCatching { close() }; return closeCompleted.get() && !failedClose.get() && observation.cleanupConfirmed() }
+    // Worker only. Another closer may still be inside delegate.close(): provider
+    // details closes its stream controller, which closes this catalog on an IO
+    // worker, while it retires the startup scope (#764). A cancelled channel
+    // request also releases its route on its own worker after close signalled
+    // it. Wait, bounded, for both receipts instead of reading them once. A close
+    // that does not finish in time, a failed close or a transport's sticky
+    // cleanup failure leaves the receipt false, and it stays false.
+    override fun closeAndConfirm(): Boolean {
+        receipt.get()?.let { return it }
+        runCatching { close() }
+        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(cleanupWaitMs)
+        val confirmed = try {
+            closeDone.await((deadline - System.nanoTime()).coerceAtLeast(0), TimeUnit.NANOSECONDS) &&
+                !failedClose.get() && transportConfirmed(deadline) && !failedClose.get()
+        } catch (_: InterruptedException) { Thread.currentThread().interrupt(); false }
+        receipt.compareAndSet(null, confirmed)
+        return checkNotNull(receipt.get())
+    }
+    private fun transportConfirmed(deadline: Long): Boolean {
+        while (!observation.cleanupConfirmed()) {
+            val remaining = deadline - System.nanoTime()
+            if (remaining <= 0) return false
+            Thread.sleep(minOf(10L, TimeUnit.NANOSECONDS.toMillis(remaining) + 1))
+        }
+        return true
+    }
     override fun toString() = "PreparedAbemaChannelCatalog(redacted)"
 }
 
+// A channel request's own release waits up to 1 s for its cancellation before
+// closing its route, so this bounds a close receipt with margin for that.
+internal const val PREPARED_ABEMA_CATALOG_CLEANUP_WAIT_MS = 3_000L
+
 internal fun prepareAbemaChannelCatalogStartup(startup: ProviderRouteStartup,
+    cleanupWaitMs: Long = PREPARED_ABEMA_CATALOG_CLEANUP_WAIT_MS,
     create: (ProviderEffectiveRoute, ProviderStartupAttemptContext) -> AbemaChannelStartupCandidate): ProviderStartupResult<ProviderCatalog> =
     startup.runReadOnly { owner, context ->
         val candidate = create(owner, context)
-        val prepared = context.own(PreparedAbemaChannelCatalog(candidate.catalog, candidate.observation))
+        val prepared = context.own(PreparedAbemaChannelCatalog(candidate.catalog, candidate.observation, cleanupWaitMs))
         val result = prepared.browse(CatalogQuery())
         when {
             !context.canContinue() -> ProviderStartupAttempt.Rejected(ProviderStartupRejection(ProviderStartupFailure.CANCELLED))

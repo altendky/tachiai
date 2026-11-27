@@ -32,7 +32,10 @@ class MainProcessRestartActivity : ComponentActivity() {
     private var priorPid = 0
     private var resumed = false
     private var opened = false
-    // When "Restarting Tachiai…" first drew, and when the old process was first seen gone (#773).
+    // When "Restarting Tachiai…" was first on screen, and when the old process was first seen gone (#773).
+    // A first draw can precede the window replacing its starting window, so
+    // the message counts as shown once it has drawn and the window has focus.
+    private var messageDrawn = false
     private var messageDrawnAt = -1L
     private var readyAt = -1L
     private val poll = Runnable { checkExit() }
@@ -119,16 +122,26 @@ class MainProcessRestartActivity : ComponentActivity() {
     }
 
     private fun showWaiting() {
-        messageDrawnAt = -1L; readyAt = -1L
+        messageDrawn = false; messageDrawnAt = -1L; readyAt = -1L
         val view = layout("Restarting Tachiai…")
         setContentView(view)
         // Tachiai reopens only once this message has reached the screen (#773).
         view.viewTreeObserver.addOnDrawListener(object : ViewTreeObserver.OnDrawListener {
             override fun onDraw() {
-                if (messageDrawnAt < 0) messageDrawnAt = SystemClock.elapsedRealtime()
+                messageDrawn = true
+                markMessageShown()
                 view.post { if (view.viewTreeObserver.isAlive) view.viewTreeObserver.removeOnDrawListener(this) }
             }
         })
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        markMessageShown()
+    }
+
+    private fun markMessageShown() {
+        if (messageDrawn && messageDrawnAt < 0 && hasWindowFocus()) messageDrawnAt = SystemClock.elapsedRealtime()
     }
 
     private fun showFailure() {

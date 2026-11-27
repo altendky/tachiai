@@ -120,6 +120,7 @@ internal class BoundedNativePlayer(
                     }
                 }
                 cleanup.ownPlayer(owned, { released }, observedFailure)
+                cleanup.stopPlayerAhead(owned)
             }
         quality.bind(player)
         player.setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA)

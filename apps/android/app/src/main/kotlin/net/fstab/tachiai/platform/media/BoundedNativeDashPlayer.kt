@@ -197,6 +197,7 @@ internal class BoundedNativeDashPlayer(
                     }
                 }
                 cleanup.ownPlayer(owned, { released }, observedFailure)
+                cleanup.stopPlayerAhead(owned)
             }
         try {
             quality.bind(player)

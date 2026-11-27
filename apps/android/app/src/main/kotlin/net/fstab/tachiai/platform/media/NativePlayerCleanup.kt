@@ -8,10 +8,14 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import net.fstab.tachiai.BuildConfig
+import net.fstab.tachiai.platform.diagnostics.ViewerMainSteps
 
 private val nativeCleanupWorker = Executors.newFixedThreadPool(2) { task ->
     Thread(task, "native-player-cleanup").apply { isDaemon = true }
@@ -63,7 +67,8 @@ internal fun NativeCleanupReceipt.ownPlayer(player: Player, releasing: () -> Boo
     own(30, ownerThread = true) {
         diagnostic.begin()
         releaseCall.set(true)
-        try { observeNativeFailure(NativeFailureStage.PLAYER_RELEASE, onFailure) { player.release() } }
+        // How long release() held the viewer's main thread (#769).
+        try { observeNativeFailure(NativeFailureStage.PLAYER_RELEASE, onFailure) { ViewerMainSteps.time("playerRelease") { player.release() } } }
         finally { releaseCall.set(false); diagnostic.finish() }
         if (releaseTimedOut.get()) awaitLatePlayerRelease(releaseCompletion, lateReleaseWaiter, releaseClockMs)
     }
@@ -101,4 +106,48 @@ private fun NativeCleanupReceipt.awaitLatePlayerRelease(completion: NativePlayer
             resolve(completed)
         }
     } catch (_: Throwable) { resolve(false) }
+}
+
+// #769: ExoPlayer.release() blocks its application (main) thread until the
+// playback thread has disabled and reset its renderers, released their codecs
+// and released the media source. At Stop, two such waits were most of the
+// viewer's skipped frames. stop() asks the playback thread for that same reset
+// without waiting. It runs first, so the reset overlaps the worker lane's
+// transport close, and a worker then waits, bounded, for it to finish before
+// release() is posted. release(), its timeout and late-release handling are
+// unchanged: when the wait lapses, release() waits for the rest as before.
+internal const val NATIVE_PLAYER_STOP_DRAIN_MS = 1_000L
+
+// Marks the playback thread's queue after stop(); null when it cannot.
+internal fun interface NativePlayerStopDrain { fun mark(): NativePlayerReleaseCompletion? }
+
+@UnstableApi
+internal fun nativePlayerStopDrain(player: Player): NativePlayerStopDrain? {
+    val looper = runCatching { (player as? ExoPlayer)?.playbackLooper }.getOrNull() ?: return null
+    if (looper === runCatching { Looper.getMainLooper() }.getOrNull()) return null
+    return NativePlayerStopDrain {
+        // Its queue runs in order, so this runs once the stop has been handled.
+        val drained = CountDownLatch(1)
+        if (!Handler(looper).post { drained.countDown() }) null
+        else NativePlayerReleaseCompletion { timeoutMs -> drained.await(timeoutMs, TimeUnit.MILLISECONDS) }
+    }
+}
+
+// Register right after ownPlayer. Synchronous cleanup on the application
+// thread never waits here; its release() waits for the reset as before.
+@UnstableApi
+internal fun NativeCleanupReceipt.stopPlayerAhead(player: Player,
+    onApplicationThread: () -> Boolean = { Looper.myLooper() == player.applicationLooper },
+    drain: NativePlayerStopDrain? = nativePlayerStopDrain(player), drainMs: Long = NATIVE_PLAYER_STOP_DRAIN_MS) {
+    val stopped = AtomicReference<NativePlayerReleaseCompletion?>()
+    own(1, ownerThread = true) {
+        // Best effort only: release() still performs the whole reset.
+        runCatching { player.stop(); stopped.set(drain?.mark()) }
+    }
+    own(29) {
+        val pending = stopped.getAndSet(null) ?: return@own
+        if (runCatching(onApplicationThread).getOrDefault(true)) return@own
+        try { pending.await(drainMs) } catch (_: InterruptedException) { Thread.currentThread().interrupt() }
+        catch (_: Throwable) { }
+    }
 }

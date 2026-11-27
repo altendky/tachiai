@@ -1817,6 +1817,14 @@ while that player is preparing, which may take longer; the late wait covers
 that case too. Why the emulator's release took longer than 500 ms was not
 established.
 
+Since [#769](https://github.com/altendky/tachiai/issues/769), cleanup calls
+the player's `stop()` before `release()`. A cleanup worker then waits, for at
+most 1 s, until the playback thread has handled that stop, and only then posts
+`release()` to the main thread. The playback thread's reset now overlaps the
+transport close and no longer holds the viewer's main thread. The release, its
+timeout and the late wait above are unchanged. See
+[failure diagnostics](failure-diagnostics.md#viewer-main-thread-steps-at-stop-and-feed-start-769--2026-11-27).
+
 ## Cached viewer cleanup ownership
 
 The cached viewer uses a process-owned run acquired before route preparation.

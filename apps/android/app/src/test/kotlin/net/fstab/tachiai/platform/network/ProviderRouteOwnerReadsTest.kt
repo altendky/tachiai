@@ -1,5 +1,10 @@
 package net.fstab.tachiai.platform.network
 
+import java.io.File
+import java.nio.file.Files
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import net.fstab.tachiai.feature.connections.ProviderInstanceStore
 import net.fstab.tachiai.platform.storage.EnvelopeSecretStore
 import net.fstab.tachiai.platform.storage.PrivateSecretRevision
@@ -151,6 +156,92 @@ class ProviderRouteOwnerReadsTest {
         var full = 0
         repeat(3) { reads.current("owner") { i, p -> full++; captureProviderRoutePool(abema, PrototypeService.ABEMA, i, p).proof } }
         assertEquals(3, full)
+    }
+
+    // A gate that holds every decryption on one chosen thread until released.
+    private class DecryptGate(private val held: Thread.() -> Boolean) {
+        val entered = CountDownLatch(1)
+        private val release = CountDownLatch(1)
+        fun hook() {
+            if (!Thread.currentThread().held()) return
+            entered.countDown()
+            check(release.await(10, TimeUnit.SECONDS))
+        }
+        fun open() = release.countDown()
+    }
+
+    @Test fun aRevisionHitRunsWhileSettingsFullReadsDecryptBothStores() {
+        val dir = Files.createTempDirectory("owner-reads").toFile()
+        val pool = Executors.newFixedThreadPool(3)
+        try {
+            val instanceLock = File(dir, "provider-instances.lock")
+            val profileLock = File(dir, "connection-profiles.lock")
+            val s = Stores()
+            // Every store object shares the store's process lock and file lock.
+            val reads = ProviderRouteOwnerReads(ProviderInstanceStore(s.instanceSecrets, instanceLock),
+                ConnectionProfileStore(s.profileSecrets, profileLock), ::defaults, { s.now })
+            fun check() = reads.current("owner") { i, p ->
+                s.fullReads++; captureProviderRoutePool(s.abema, PrototypeService.ABEMA, i, p).resolve().proof
+            }
+            val proof = check()
+            assertEquals(1, s.fullReads)
+            val decrypts = s.decrypts()
+            // The Providers screen's load, each read held inside its decryption.
+            val instanceGate = DecryptGate { name == "settings-instances" }
+            val profileGate = DecryptGate { name == "settings-profiles" }
+            s.instanceSecrets.decryptHook = instanceGate::hook
+            s.profileSecrets.decryptHook = profileGate::hook
+            val settingsInstances = pool.submit<List<ProviderInstance>> {
+                Thread.currentThread().name = "settings-instances"
+                ProviderInstanceStore(s.instanceSecrets, instanceLock).read(::defaults)
+            }
+            val settingsProfiles = pool.submit<List<ConnectionSummary>> {
+                Thread.currentThread().name = "settings-profiles"
+                ConnectionProfileStore(s.profileSecrets, profileLock).summaries(publicKeys = false)
+            }
+            assertTrue(instanceGate.entered.await(5, TimeUnit.SECONDS))
+            assertTrue(profileGate.entered.await(5, TimeUnit.SECONDS))
+            // Both full reads are still decrypting; the hit needs neither.
+            assertEquals(proof, pool.submit<String?> { check() }.get(5, TimeUnit.SECONDS))
+            assertEquals(1, s.fullReads)
+            assertFalse(settingsInstances.isDone || settingsProfiles.isDone)
+            instanceGate.open(); profileGate.open()
+            assertEquals(s.abema, settingsInstances.get(5, TimeUnit.SECONDS).first().id)
+            assertEquals(listOf(s.routeId), settingsProfiles.get(5, TimeUnit.SECONDS).map { it.id })
+            assertEquals(decrypts + 2, s.decrypts())
+        } finally { pool.shutdownNow(); dir.deleteRecursively() }
+    }
+
+    @Test fun aWriteCommittedDuringAnOlderFullReadsDecryptionIsSeenAtTheNextCheck() {
+        val dir = Files.createTempDirectory("owner-reads").toFile()
+        val pool = Executors.newFixedThreadPool(2)
+        try {
+            val instanceLock = File(dir, "provider-instances.lock")
+            val profileLock = File(dir, "connection-profiles.lock")
+            val s = Stores()
+            val reads = ProviderRouteOwnerReads(ProviderInstanceStore(s.instanceSecrets, instanceLock),
+                ConnectionProfileStore(s.profileSecrets, profileLock), ::defaults, { s.now })
+            fun check() = reads.current("owner") { i, p ->
+                s.fullReads++; captureProviderRoutePool(s.abema, PrototypeService.ABEMA, i, p).resolve().proof
+            }
+            // Hold the full read's last profile decryption, after every
+            // record it uses was read, so it can only see the old records.
+            var profileDecrypts = 0
+            val gate = DecryptGate { name == "owner-check" && ++profileDecrypts == 2 }
+            s.profileSecrets.decryptHook = gate::hook
+            val stale = pool.submit<String?> { Thread.currentThread().name = "owner-check"; check() }
+            assertTrue(gate.entered.await(5, TimeUnit.SECONDS))
+            // The write takes the same locks; it is not held behind that decryption.
+            pool.submit { ConnectionProfileStore(s.profileSecrets, profileLock).remove(s.routeId) }.get(5, TimeUnit.SECONDS)
+            gate.open()
+            // That read resolved the records it read, and its verdict names their old revisions.
+            assertNotNull(stale.get(5, TimeUnit.SECONDS))
+            assertEquals(1, s.fullReads)
+            assertThrows(ProviderRoutePoolException::class.java) { check() }
+            assertEquals(2, s.fullReads)
+            assertThrows(ProviderRoutePoolException::class.java) { check() }
+            assertEquals(3, s.fullReads)
+        } finally { pool.shutdownNow(); dir.deleteRecursively() }
     }
 
     @Test fun revisionsNameEachCommittedEnvelopeAndNoPlaintext() {

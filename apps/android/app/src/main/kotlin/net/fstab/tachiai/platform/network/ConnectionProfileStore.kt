@@ -12,6 +12,7 @@ import net.fstab.tachiai.platform.storage.PRIVATE_SECRET_LIMIT
 import net.fstab.tachiai.platform.storage.StoreLockKind
 import net.fstab.tachiai.platform.storage.StoreLockStats
 import net.fstab.tachiai.platform.storage.StoreLockUse
+import net.fstab.tachiai.platform.storage.StoreReadStep
 import net.fstab.tachiai.platform.storage.processFileLocked
 import net.fstab.tachiai.presentation.MAX_PROVIDER_ROUTES
 
@@ -68,30 +69,41 @@ internal class ConnectionProfileStore(private val secrets: PrivateSecretStore, p
         secrets.write(bytes)
     }
 
-    fun summaries(): List<ConnectionSummary> = locked {
-        summaries(read())
+    // Only the record read holds the store's locks. Decryption, parsing and
+    // the caller's selection follow outside them, so revision reads and other
+    // readers never wait behind keystore work or parsing (#771). Mutations
+    // still read, decode and write under the locks.
+    private fun <T> readOutsideLock(select: (List<Entry>) -> T): Pair<T, PrivateSecretRevision?> {
+        val sealed = locked { secrets.readSealed() }
+        val plaintext = StoreLockStats.measure(StoreLockKind.CONNECTION_PROFILES, StoreReadStep.DECRYPT, sealed::open)
+        return StoreLockStats.measure(StoreLockKind.CONNECTION_PROFILES, StoreReadStep.DECODE) { select(read(plaintext)) } to
+            sealed.revision
     }
 
-    private fun summaries(entries: List<Entry>) = entries.map { entry ->
+    // publicKeys = false skips deriving WireGuard public keys, which only the
+    // Routes screen shows (#771).
+    fun summaries(publicKeys: Boolean = true): List<ConnectionSummary> = readOutsideLock { summaries(it, publicKeys) }.first
+
+    private fun summaries(entries: List<Entry>, publicKeys: Boolean = true) = entries.map { entry ->
         ConnectionSummary(entry.id, entry.name, entry.profile.kind, entry.profile.endpoint,
-            protocols.protocols.firstOrNull { it.kind == entry.profile.kind }?.publicKey(entry.profile))
+            if (!publicKeys) null else protocols.protocols.firstOrNull { it.kind == entry.profile.kind }?.publicKey(entry.profile))
     }
 
     // Worker-only secret snapshot; never sent through intents, UI state or diagnostics.
-    fun selected(id: String): ConnectionProfile = locked { checkNotNull(read().find { it.id == id }).profile }
+    fun selected(id: String): ConnectionProfile = readOutsideLock { checkNotNull(it.find { entry -> entry.id == id }).profile }.first
 
     // Route-owner lookup: a lease client names a profile only by its route
     // configuration digest, so configuration never crosses process boundaries.
-    fun configured(configurationKey: String): ConnectionProfile? = locked {
-        read().map { it.profile }.firstOrNull { routeConfigurationKey(it) == configurationKey }
-    }
+    fun configured(configurationKey: String): ConnectionProfile? = readOutsideLock { entries ->
+        entries.map { it.profile }.firstOrNull { routeConfigurationKey(it) == configurationKey }
+    }.first
 
     // One protected read captures all requested profiles. An absent ID is a
     // missing candidate; an unreadable/corrupt record fails the whole snapshot.
     fun snapshot(ids: Set<String>): Map<String, ConnectionProfile> {
         require(ids.size <= MAX_PROVIDER_ROUTES && ids.all { UUID.fromString(it).toString() == it })
         if (ids.isEmpty()) return emptyMap()
-        return locked { read().filter { it.id in ids }.associate { it.id to it.profile } }
+        return readOutsideLock { entries -> entries.filter { it.id in ids }.associate { it.id to it.profile } }.first
     }
 
     // The record's revision without decrypting it (#745); an absent record
@@ -102,10 +114,7 @@ internal class ConnectionProfileStore(private val secrets: PrivateSecretStore, p
     fun snapshotRevisioned(ids: Set<String>): Pair<Map<String, ConnectionProfile>, PrivateSecretRevision?> {
         require(ids.size <= MAX_PROVIDER_ROUTES && ids.all { UUID.fromString(it).toString() == it })
         if (ids.isEmpty()) return emptyMap<String, ConnectionProfile>() to null
-        return locked {
-            val stored = secrets.readRevisioned()
-            read(stored.plaintext).filter { it.id in ids }.associate { it.id to it.profile } to stored.revision
-        }
+        return readOutsideLock { entries -> entries.filter { it.id in ids }.associate { it.id to it.profile } }
     }
 
     fun add(name: String, profile: ConnectionProfile) = locked(StoreLockUse.WRITE) {

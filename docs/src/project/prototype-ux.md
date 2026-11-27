@@ -623,6 +623,13 @@ It does not clear saved routes, provider instances, authorization, cached bundle
 or diagnostics. The next fresh prototype restores selected, cleared and stale
 instance choices without starting playback. A malformed checkpoint leaves both
 feeds unassigned and requires recovery rather than selecting default identities.
+While the old player process ends, the relay shows "Restarting the player…"
+the same way as the main-process restart above: the process ends only once the
+relay covers the picker, and the message stays at least half a second once it
+appears ([#784](https://github.com/altendky/tachiai/issues/784)). Until saved
+setup is first read, the picker shows no streams list or setup messages, so a
+fresh picker never flashes "No configured streams" or a removed-item message
+for streams it has not loaded yet.
 Checkpoint or main-menu launch failure keeps the process alive and playback
 blocked with fixed safe feedback and a bounded `RECOVERY_RESTART` diagnostic
 observation. Neither raw exception messages nor provider

@@ -86,6 +86,9 @@ internal fun PrototypeSourcePicker(message: String?, onConnections: (() -> Unit)
     episodes: CollectionEpisodes? = null,
     // Watch is starting: Back goes to the Activity's "Stop playback?" (#772).
     startingPlayback: Boolean = false,
+    // False until saved setup is first read: the streams list and its messages
+    // would describe an empty setup that is only still loading (#784).
+    setupLoaded: Boolean = true,
     onWatch: (ConfiguredFeedAssignments) -> Unit) {
     var a by rememberSaveable(assignmentRestoreGeneration) { mutableStateOf<String?>(encodeConfiguredFeedChoice(initialAssignments.a)) }
     var b by rememberSaveable(assignmentRestoreGeneration) { mutableStateOf<String?>(encodeConfiguredFeedChoice(initialAssignments.b)) }
@@ -194,7 +197,7 @@ internal fun PrototypeSourcePicker(message: String?, onConnections: (() -> Unit)
             onBack = ::closeEpisodes, onAssign = ::assignEpisode,
             // The recovery layout already scrolls the whole picker.
             scroll = onRecovery == null, modifier = if (onRecovery != null) Modifier else Modifier.weight(1f))
-        else Column(if (onRecovery != null) Modifier else Modifier.weight(1f).verticalScroll(rememberScrollState()),
+        else if (setupLoaded) Column(if (onRecovery != null) Modifier else Modifier.weight(1f).verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(12.dp)) {
             providerInstances.forEach { instance ->
                 val providerName = providerDisplayNames(instance).inline
@@ -274,8 +277,8 @@ internal fun PrototypeSourcePicker(message: String?, onConnections: (() -> Unit)
                 }
             }
         }
-        if (resolved is ConfiguredPrototypeSelectionResult.Failure) Text(configuredSelectionMessage(resolved.reason))
-        if (!setupReady) Text("Provider setup must be read successfully before playback.")
+        if (setupLoaded && resolved is ConfiguredPrototypeSelectionResult.Failure) Text(configuredSelectionMessage(resolved.reason))
+        if (setupLoaded && !setupReady) Text("Provider setup must be read successfully before playback.")
     }
 }
 

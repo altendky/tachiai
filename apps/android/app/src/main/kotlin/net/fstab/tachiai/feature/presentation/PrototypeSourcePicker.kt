@@ -84,6 +84,8 @@ internal fun PrototypeSourcePicker(message: String?, onConnections: (() -> Unit)
     playbackAvailable: Boolean = true, recoveryMessage: String? = null, onRecovery: (() -> Unit)? = null,
     assignmentRestoreGeneration: Long = 0,
     episodes: CollectionEpisodes? = null,
+    // Watch is starting: Back goes to the Activity's "Stop playback?" (#772).
+    startingPlayback: Boolean = false,
     onWatch: (ConfiguredFeedAssignments) -> Unit) {
     var a by rememberSaveable(assignmentRestoreGeneration) { mutableStateOf<String?>(encodeConfiguredFeedChoice(initialAssignments.a)) }
     var b by rememberSaveable(assignmentRestoreGeneration) { mutableStateOf<String?>(encodeConfiguredFeedChoice(initialAssignments.b)) }
@@ -114,7 +116,7 @@ internal fun PrototypeSourcePicker(message: String?, onConnections: (() -> Unit)
     val episodesButtons = remember { mutableMapOf<String, FocusRequester>() }
     var returnFocus by remember { mutableStateOf<String?>(null) }
     fun closeEpisodes() { returnFocus = browsing; browsing = null }
-    BackHandler(enabled = browsed != null) { closeEpisodes() }
+    BackHandler(enabled = browsed != null && !startingPlayback) { closeEpisodes() }
     val televisionFocus = LocalTelevision.current
     LaunchedEffect(browsed == null, returnFocus) {
         val target = returnFocus

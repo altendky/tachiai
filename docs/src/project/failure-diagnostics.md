@@ -1339,6 +1339,20 @@ An account HTTP connection whose close isn't confirmed logs
 `NONE` (no body stream), `THREW`, `TIMEOUT`, `REJECTED` (its cleanup thread
 refused the task) or `REENTRANT`.
 
+On the next emulator run, these lines named the cause on the fourth early
+Stop: `accountHttp=CLEANUP_UNCONFIRMED stream=REJECTED disconnect=REJECTED`,
+then `cachedCleanup=UNCONFIRMED part=SLOT_PROFILE_READ` and
+`viewerCleanup=UNCONFIRMED cause=FEED_KNOWN_FAILED`. Both feeds were configured
+slots, and both were reading their subscription profile when the Stop came.
+Their two connection closes each start a stream close and a disconnect
+together, because the stream close can block until the disconnect runs. The
+process-wide cleanup pool had 2 threads and a 2-task queue, so it refused the
+extra closes, and a refused close counts as unconfirmed.
+
+That pool now runs every close at once on its own thread, with no queue, up to
+32 running together. A close beyond that limit, or one that throws or times
+out, still fails closed.
+
 ## Collecting one device's evidence
 
 Verify the requested device before collecting. For the persistent emulator,

@@ -4,8 +4,8 @@ import java.io.ByteArrayOutputStream
 import java.net.CookieHandler
 import java.net.URL
 import java.util.concurrent.CountDownLatch
-import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.SynchronousQueue
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -32,8 +32,15 @@ internal interface AbemaAccountTransport : AutoCloseable {
 internal class AbemaAccountCleanupReceipt<T : Any>(val resource: T, private val cleanup: (T) -> Unit,
     private val waitMs: Long = 1000) {
     companion object {
-        private val workers = ThreadPoolExecutor(2, 2, 0L, TimeUnit.MILLISECONDS,
-            ArrayBlockingQueue<Runnable>(2), { task -> Thread(task, "abema-account-cleanup").apply { isDaemon = true } })
+        // #783: every close starts at once on its own thread, never queued. An
+        // HTTP connection's stream close may block until its disconnect runs,
+        // so the two must run together. Two threads with a two-slot queue
+        // refused both halves when two feeds stopped at once, which poisoned
+        // a cleanup that would have confirmed. Only more than WORKER_LIMIT
+        // closes running at once are refused, and that still fails closed.
+        internal const val WORKER_LIMIT = 32
+        private val workers = ThreadPoolExecutor(0, WORKER_LIMIT, 30L, TimeUnit.SECONDS,
+            SynchronousQueue<Runnable>(), { task -> Thread(task, "abema-account-cleanup").apply { isDaemon = true } })
     }
     private val lock = Any()
     private val finished = CountDownLatch(1)

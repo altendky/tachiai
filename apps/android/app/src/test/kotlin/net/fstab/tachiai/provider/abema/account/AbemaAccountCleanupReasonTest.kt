@@ -20,6 +20,29 @@ class AbemaAccountCleanupReasonTest {
         assertTrue(fine.await()); assertNull(fine.failureReason)
     }
 
+    // #783 on the emulator: two feeds stopping at once each close a stream and
+    // disconnect together. Blocked closes must not refuse the others.
+    @Test fun concurrentBlockedClosesAllRunAndConfirmInsteadOfBeingRefused() {
+        val release = CountDownLatch(1)
+        val running = CountDownLatch(8)
+        val receipts = List(8) { AbemaAccountCleanupReceipt(Any(), { running.countDown(); release.await(2, TimeUnit.SECONDS) }) }
+        receipts.forEach { it.start() }
+        assertTrue("every close runs at once", running.await(1, TimeUnit.SECONDS))
+        release.countDown()
+        assertTrue(receipts.all { it.await() })
+        assertTrue(receipts.all { it.failureReason == null })
+    }
+
+    // A stream close that waits for its disconnect still confirms when both
+    // start together, as Handle.cleanup starts them.
+    @Test fun aStreamCloseBlockedUntilItsDisconnectConfirmsWithIt() {
+        val disconnected = CountDownLatch(1)
+        val stream = AbemaAccountCleanupReceipt(Any(), { check(disconnected.await(1, TimeUnit.SECONDS)) })
+        val disconnect = AbemaAccountCleanupReceipt(Any(), { disconnected.countDown() })
+        stream.start(); disconnect.start()
+        assertTrue(stream.await()); assertTrue(disconnect.await())
+    }
+
     @Test fun cleanupLinesCarryOnlyClosedNames() {
         assertEquals("accountHttp=CLEANUP_UNCONFIRMED stream=THREW disconnect=OK", accountHttpCleanupLine("THREW", "OK"))
         assertEquals("cachedCleanup=UNCONFIRMED part=SLOT_PROFILE_READ", cachedCleanupLine(CachedCleanupPart.SLOT_PROFILE_READ))

@@ -2264,14 +2264,22 @@ Only the engine differs; see the
 - **Display only.** Search, matching, saved streams, saved episode choices,
   identities and the stored selection keep the original text.
 - **Settings.**
-  - **Providers → Translation → Translate provider text** turns it on or off.
-    It is off by default. Its status line says when a model is downloading, or
-    when translation is unavailable.
+  - Each provider's details have **Provider text → Translate provider text**,
+    beside its **Source language** and **Text in video**. It turns translation
+    on or off for that provider's text only, so ABEMA can be on while Twitch is
+    off. It is off by default for every provider, and its status line says
+    when a model is downloading, or when translation is unavailable. The user
+    decided this on 2026-11-26
+    ([#765](https://github.com/altendky/tachiai/issues/765)); it replaces the
+    former global **Providers → Translation** switch, which is removed with its
+    screen. The old global value is not carried over: after the update every
+    provider starts off.
   - Each provider's details have a **Source language**: **Auto** or a fixed
     language. ABEMA defaults to **Japanese**; Twitch, YouTube and later
     providers default to **Auto**. **Auto** detects each string's language on
     the device. Text already in the device's language, or whose language is
-    unclear, stays original.
+    unclear, stays original. Its status says "Translation is off" while both of
+    that provider's switches are off.
   - A fixed language skips detection. This avoids kanji-only titles such as
     大相撲 or 十一月場所 being detected as Chinese.
   - When the fixed language has its own script, text with none of that script
@@ -2279,7 +2287,7 @@ Only the engine differs; see the
     not translated. Japanese needs kana or kanji, Chinese Han, Korean Hangul,
     Russian Cyrillic, and so on. Latin-script languages are not checked.
 - **On-device.** Provider text is translated on the device and is not sent to
-  a translation service. Turning translation on allows a one-time model
+  a translation service. Turning a provider's translation on allows a one-time model
   download from the platform's engine, about 30 MB per source language.
 - **Unavailable.** If the device language or a source language is unsupported,
   or a model cannot be downloaded, originals stay and the setting says
@@ -2292,7 +2300,8 @@ Only the engine differs; see the
 Provider-free JVM tests cover the translator states (original first,
 replacement, unsure, unsupported and same-language text kept, cache hits,
 download failure and retry), Source language defaults, the script guard,
-Tachiai-made titles and the stored setting.
+Tachiai-made titles, the per-provider switch and the stored setting,
+including a record written with the former global switch.
 The device record in #643 is still open: model download and translation on the
 phone and SHIELD, and the quality of representative ABEMA titles. The ML Kit
 usage terms raise a question for TV; see

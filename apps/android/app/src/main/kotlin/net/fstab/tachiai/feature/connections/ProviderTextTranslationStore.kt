@@ -20,12 +20,17 @@ internal fun providerTextTranslationStore(context: Context) = ProviderTextTransl
     File(context.applicationContext.noBackupFilesDir, "provider-text-translation.lock"),
 )
 
-// Worker-only record of the on/off switch, explicit per-instance Source
-// language choices and the instances whose Translate text in video default is
-// on (#664, version 2). It holds no provider text, recognized text,
-// translations, frames or account data.
+// Worker-only record of explicit per-instance Source language choices, the
+// instances whose Translate text in video default is on (#664) and the
+// instances whose Translate provider text is on (#765, version 3). It holds no
+// provider text, recognized text, translations, frames or account data.
+// Versions 1 and 2 held one global Translate provider text switch; it is read
+// and dropped, so every provider starts off after the update (#765).
 internal class ProviderTextTranslationStore(private val store: PrivateSecretStore, private val lockFile: File? = null) {
-    companion object { private val lock = Any(); private const val VERSION = 2; private const val VERSION_LANGUAGES_ONLY = 1 }
+    companion object {
+        private val lock = Any()
+        private const val VERSION = 3; private const val VERSION_GLOBAL_SWITCH = 2; private const val VERSION_LANGUAGES_ONLY = 1
+    }
     private fun <T> locked(action: () -> T): T = synchronized(lock) {
         val file = lockFile
         if (file == null) action() else processFileLocked(file, action)
@@ -38,8 +43,9 @@ internal class ProviderTextTranslationStore(private val store: PrivateSecretStor
         check(bytes.size <= PRIVATE_SECRET_LIMIT)
         return DataInputStream(ByteArrayInputStream(bytes)).use { input ->
             val version = input.readInt()
-            check(version == VERSION || version == VERSION_LANGUAGES_ONLY)
-            val enabled = input.readBoolean()
+            check(version == VERSION || version == VERSION_GLOBAL_SWITCH || version == VERSION_LANGUAGES_ONLY)
+            // The former global switch is not carried over (#765).
+            if (version != VERSION) input.readBoolean()
             val count = input.readInt(); check(count in 0..MAX_TRANSLATION_SETTINGS_ENTRIES)
             val languages = linkedMapOf<String, ProviderSourceLanguage>()
             repeat(count) {
@@ -47,23 +53,26 @@ internal class ProviderTextTranslationStore(private val store: PrivateSecretStor
                 check(id !in languages)
                 languages[id] = ProviderSourceLanguage(tag)
             }
-            val frameText = linkedSetOf<String>()
-            if (version == VERSION) {
-                val frameCount = input.readInt(); check(frameCount in 0..MAX_TRANSLATION_SETTINGS_ENTRIES)
-                repeat(frameCount) { check(frameText.add(input.readUTF())) }
+            fun instances(): Set<String> = linkedSetOf<String>().also { ids ->
+                val count = input.readInt(); check(count in 0..MAX_TRANSLATION_SETTINGS_ENTRIES)
+                repeat(count) { check(ids.add(input.readUTF())) }
             }
+            val frameText = if (version == VERSION_LANGUAGES_ONLY) emptySet() else instances()
+            val providerText = if (version == VERSION) instances() else emptySet()
             check(input.read() == -1)
-            ProviderTextTranslationSettings(enabled, languages, frameText)
+            ProviderTextTranslationSettings(languages, frameText, providerText)
         }
     }
 
     fun update(transform: (ProviderTextTranslationSettings) -> ProviderTextTranslationSettings): ProviderTextTranslationSettings = locked {
         val next = transform(readUnlocked())
         val bytes = ByteArrayOutputStream().also { output -> DataOutputStream(output).use { data ->
-            data.writeInt(VERSION); data.writeBoolean(next.enabled); data.writeInt(next.sourceLanguages.size)
+            data.writeInt(VERSION); data.writeInt(next.sourceLanguages.size)
             next.sourceLanguages.forEach { (id, language) -> data.writeUTF(id); data.writeUTF(language.tag) }
             data.writeInt(next.frameTextInstances.size)
             next.frameTextInstances.forEach(data::writeUTF)
+            data.writeInt(next.providerTextInstances.size)
+            next.providerTextInstances.forEach(data::writeUTF)
         } }.toByteArray()
         check(bytes.size <= PRIVATE_SECRET_LIMIT)
         store.write(bytes)

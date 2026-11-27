@@ -74,18 +74,28 @@ internal fun configuredSourceTextSource(source: ConfiguredSource): ProviderTextS
 internal const val MAX_TRANSLATION_SETTINGS_ENTRIES = 64
 
 internal data class ProviderTextTranslationSettings(
-    val enabled: Boolean = false,
     // Explicit per-instance choices only; an absent entry uses the provider default.
     val sourceLanguages: Map<String, ProviderSourceLanguage> = emptyMap(),
     // Instances whose Translate text in video default is on (#664); absent means off.
     val frameTextInstances: Set<String> = emptySet(),
+    // Instances whose Translate provider text is on (#765); absent means off.
+    val providerTextInstances: Set<String> = emptySet(),
 ) {
     init {
         require(sourceLanguages.size <= MAX_TRANSLATION_SETTINGS_ENTRIES)
         require(sourceLanguages.all { (id, language) -> validProviderInstanceId(id) && ProviderSourceLanguage.valid(language.tag) })
         require(frameTextInstances.size <= MAX_TRANSLATION_SETTINGS_ENTRIES)
         require(frameTextInstances.all(::validProviderInstanceId))
+        require(providerTextInstances.size <= MAX_TRANSLATION_SETTINGS_ENTRIES)
+        require(providerTextInstances.all(::validProviderInstanceId))
     }
+
+    /** Whether this instance's provider-supplied text is translated (#765); off unless chosen. */
+    fun providerText(instanceId: String?): Boolean = instanceId != null && instanceId in providerTextInstances
+
+    fun withProviderText(instance: ProviderInstance, on: Boolean, existingIds: Set<String>) =
+        copy(providerTextInstances = providerTextInstances.filter { it in existingIds && it != instance.id }.toSet() +
+            if (on) setOf(instance.id) else emptySet())
 
     /** The provider default for translating text in the video picture (#664); off unless chosen. */
     fun frameText(instanceId: String?): Boolean = instanceId != null && instanceId in frameTextInstances
@@ -95,7 +105,8 @@ internal data class ProviderTextTranslationSettings(
             if (on) setOf(instance.id) else emptySet())
 
     /** Settings without any choice for a removed instance. */
-    fun withoutInstance(id: String) = copy(sourceLanguages = sourceLanguages - id, frameTextInstances = frameTextInstances - id)
+    fun withoutInstance(id: String) = copy(sourceLanguages = sourceLanguages - id, frameTextInstances = frameTextInstances - id,
+        providerTextInstances = providerTextInstances - id)
 
     fun sourceLanguage(source: ProviderTextSource): ProviderSourceLanguage =
         source.instanceId?.let(sourceLanguages::get) ?: defaultProviderSourceLanguage(source.service)
@@ -104,9 +115,9 @@ internal data class ProviderTextTranslationSettings(
         copy(sourceLanguages = (sourceLanguages.filterKeys { it in existingIds && it != instance.id } +
             if (language == defaultProviderSourceLanguage(instance.service)) emptyMap() else mapOf(instance.id to language)))
 
-    /** Null means show the original without consulting an engine. */
+    /** Null means show the original without consulting an engine, including when this provider's switch is off. */
     fun request(text: String, source: ProviderTextSource, target: String?): TranslationRequest? =
-        if (!enabled) null else languageRequest(text, source, target)
+        if (!providerText(source.instanceId)) null else languageRequest(text, source, target)
 
     /**
      * The same language rules without the Translate provider text switch. Text

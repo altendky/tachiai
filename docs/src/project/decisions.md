@@ -164,6 +164,10 @@
   sends usage metrics (not the text) to Google, with no opt-out. Mozilla's
   on-device Bergamot engine is the alternative if this needs to change; it would
   be an implementation difference, not a UX change.
+- **Translate provider text** is a per-provider switch in each provider's
+  details, off by default, replacing the global switch
+  ([#765](https://github.com/altendky/tachiai/issues/765), user decision,
+  2026-11-26, all implementations). The old global value is not migrated.
 - Text in the video ([#664](https://github.com/altendky/tachiai/issues/664))
   is translated in a chip that replaces its stable source block, only on the
   main pane, behind a per-provider default that is off and a temporary

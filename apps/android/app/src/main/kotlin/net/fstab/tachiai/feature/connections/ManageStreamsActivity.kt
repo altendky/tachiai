@@ -117,6 +117,7 @@ class ManageStreamsActivity : ComponentActivity() {
                                 if (resumed && !isDestroyed && !savingWhileLeaving)
                                     startActivity(Intent(this@ManageStreamsActivity, ConnectionProfilesActivity::class.java)) }
                         }, enabled = !savingWhileLeaving, startupStatus = startupStatus)
+                    ProviderTextSettings(preferenceState.instance, preferenceState.instances, enabled = !savingWhileLeaving)
                     ProviderSourceLanguageSettings(preferenceState.instance, preferenceState.instances, enabled = !savingWhileLeaving)
                     ProviderFrameTextSettings(preferenceState.instance, preferenceState.instances, enabled = !savingWhileLeaving)
                     accountContent?.invoke() ?: Text(if (checkingAccount) "Account actions will be available after the connection check."

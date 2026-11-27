@@ -17,7 +17,7 @@ import org.junit.Test
 class ProviderTextTranslationTest {
     private val abema = ProviderTextSource(PrototypeService.ABEMA, defaultProviderInstanceId(PrototypeService.ABEMA))
     private val twitch = ProviderTextSource(PrototypeService.TWITCH, defaultProviderInstanceId(PrototypeService.TWITCH))
-    private val on = ProviderTextTranslationSettings(enabled = true)
+    private val on = ProviderTextTranslationSettings(providerTextInstances = setOf(abema.instanceId!!, twitch.instanceId!!))
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     private class FakeEngine(private val supported: Set<String> = setOf("ja", "en", "ko", "zh", "fr")) : TextTranslationEngine {
@@ -52,6 +52,35 @@ class ProviderTextTranslationTest {
         assertEquals(TranslationRequest("大相撲", ProviderSourceLanguage("ja"), "en"), on.request("大相撲", abema, "en"))
     }
 
+    @Test fun providerTextIsPerInstanceAndOffByDefault() {
+        val abemaInstance = ProviderInstance(abema.instanceId!!, PrototypeService.ABEMA, "ABEMA")
+        val twitchInstance = ProviderInstance(twitch.instanceId!!, PrototypeService.TWITCH, "Twitch")
+        val ids = setOf(abemaInstance.id, twitchInstance.id)
+        val off = ProviderTextTranslationSettings()
+        assertFalse(off.providerText(abemaInstance.id)); assertFalse(off.providerText(null))
+        assertNull(off.request("大相撲", abema, "en"))
+        // ABEMA on, Twitch off: only ABEMA's text goes through the translator.
+        val abemaOnly = off.withProviderText(abemaInstance, true, ids)
+        assertEquals(setOf(abemaInstance.id), abemaOnly.providerTextInstances)
+        assertNotNull(abemaOnly.request("大相撲", abema, "en"))
+        assertNull(abemaOnly.request("大相撲", twitch, "en"))
+        // A source without an instance is never translated.
+        assertNull(abemaOnly.request("大相撲", ProviderTextSource(PrototypeService.ABEMA), "en"))
+        // Text in video stays independent.
+        assertFalse(abemaOnly.frameText(abemaInstance.id))
+        assertNull(off.withFrameText(abemaInstance, true, ids).request("大相撲", abema, "en"))
+        // Stale instances are dropped on the next change; removed instances lose their switch.
+        val stale = "12345678-1234-1234-1234-123456789abd"
+        assertEquals(setOf(abemaInstance.id, twitchInstance.id),
+            abemaOnly.copy(providerTextInstances = abemaOnly.providerTextInstances + stale)
+                .withProviderText(twitchInstance, true, ids).providerTextInstances)
+        assertEquals(emptySet<String>(), abemaOnly.withProviderText(abemaInstance, false, ids).providerTextInstances)
+        assertFalse(abemaOnly.withoutInstance(abemaInstance.id).providerText(abemaInstance.id))
+        assertThrows(IllegalArgumentException::class.java) {
+            ProviderTextTranslationSettings(providerTextInstances = setOf("not-an-instance"))
+        }
+    }
+
     @Test fun sourceLanguageDefaultsAndExplicitChoices() {
         assertEquals(ProviderSourceLanguage("ja"), on.sourceLanguage(abema))
         assertEquals(ProviderSourceLanguage.AUTO, on.sourceLanguage(twitch))
@@ -78,7 +107,8 @@ class ProviderTextTranslationTest {
         assertNotNull(on.request("大相撲LIVE 十一月場所", abema, "en"))
         assertNotNull(on.request("ニュース", abema, "en"))
         val instance = "12345678-1234-1234-1234-123456789abc"
-        fun fixed(tag: String) = ProviderTextTranslationSettings(true, mapOf(instance to ProviderSourceLanguage(tag)))
+        fun fixed(tag: String) = ProviderTextTranslationSettings(mapOf(instance to ProviderSourceLanguage(tag)),
+            providerTextInstances = setOf(instance))
         val source = ProviderTextSource(PrototypeService.TWITCH, instance)
         assertNull(fixed("zh").request("Chillhop", source, "en"))
         assertNotNull(fixed("zh").request("中文频道", source, "en"))

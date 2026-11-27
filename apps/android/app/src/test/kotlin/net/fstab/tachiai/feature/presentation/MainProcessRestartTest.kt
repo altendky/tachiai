@@ -6,7 +6,18 @@ import org.junit.Test
 class MainProcessRestartTest {
     @Test fun relayLaunchesBeforeTheMainProcessFinishesFlushesAndTerminates() {
         val steps = mutableListOf<String>()
-        performMainRestart("app", "app", { steps += "launch" }, { steps += "finish" }, { steps += "flush" }, { steps += "terminate" })
+        performMainRestart("app", "app", { steps += "launch" }, { steps += "finish" }, { it() },
+            { steps += "flush" }, { steps += "terminate" })
+        assertEquals(listOf("launch", "finish", "flush", "terminate"), steps)
+    }
+
+    @Test fun theMainProcessEndsOnlyOnceTheRelayCoversIt() {
+        val steps = mutableListOf<String>()
+        var covered: (() -> Unit)? = null
+        performMainRestart("app", "app", { steps += "launch" }, { steps += "finish" }, { covered = it },
+            { steps += "flush" }, { steps += "terminate" })
+        assertEquals(listOf("launch", "finish"), steps)
+        checkNotNull(covered).invoke()
         assertEquals(listOf("launch", "finish", "flush", "terminate"), steps)
     }
 
@@ -14,7 +25,8 @@ class MainProcessRestartTest {
         for (process in listOf("app:prototype_cached_player", "app:main_restart", "other")) {
             var called = false
             assertThrows(IllegalStateException::class.java) {
-                performMainRestart(process, "app", { called = true }, { called = true }, { called = true }, { called = true })
+                performMainRestart(process, "app", { called = true }, { called = true }, { called = true; it() },
+                    { called = true }, { called = true })
             }
             assertFalse(called)
         }
@@ -22,7 +34,7 @@ class MainProcessRestartTest {
 
     @Test fun failingFlushCannotPreventTermination() {
         val steps = mutableListOf<String>()
-        performMainRestart("app", "app", {}, {}, { error("journal unavailable") }, { steps += "terminate" })
+        performMainRestart("app", "app", {}, {}, { it() }, { error("journal unavailable") }, { steps += "terminate" })
         assertEquals(listOf("terminate"), steps)
     }
 }

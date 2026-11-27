@@ -1186,6 +1186,7 @@ the main process still held that poisoned instance. Every acquisition is
 refused as `CLEANUP_FAILED` from then until the main process ends.
 
 What the code shows:
+
 - Each feed's lease session in the main process ends by waiting for its own
   work and its owner attachment to confirm cleanup. After a Stop during
   acquisition, that includes the shared validation finishing. That
@@ -1203,6 +1204,7 @@ What the code shows:
   behind each other.
 
 Now:
+
 - A session end waits up to `END_MS` (10 s) on its own thread.
 - The client waits `CLOSE_REPLY_MS` (12 s) for `CLOSED`, longer than the
   service's bound.
@@ -1214,6 +1216,7 @@ late finish never clears it.
 
 Closed lines under `TachiaiAbemaAccount` name each outcome. They carry no
 account, route or instance values:
+
 - Main process:
   - `owner=SESSION_END result=… waitedMs=…`, once per lease session. `result`
     is `CONFIRMED`, `JOBS_RUNNING`, `ATTACHMENT_UNCONFIRMED`, `INTERRUPTED`,
@@ -1236,6 +1239,7 @@ A poisoned account instance now reaches the existing Restart recovery instead
 of "could not be renewed" or "Connection unavailable". The ABEMA account code
 registers its poison with the startup cleanup gate (#764), so that gate
 reports `CLEANUP_UNCONFIRMED` for the instance:
+
 - Provider details and Manage streams show the #764/#767 notice, "Connection
   cleanup could not be confirmed. Restart Tachiai before using this provider
   again. Saved app data will be kept.", with its Restart.

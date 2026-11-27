@@ -22,9 +22,20 @@ class PrototypeRestartTest {
         for (cached in listOf(true, false)) {
             val steps = mutableListOf<String>()
             performPrototypeRestart("app" + if (cached) ":prototype_cached_player" else ":prototype_player", "app", cached,
-                { steps += "checkpoint" }, { steps += "launch" }, { steps += "finish" }, { steps += "flush" }, { steps += "terminate" })
+                { steps += "checkpoint" }, { steps += "launch" }, { steps += "finish" }, { it() },
+                { steps += "flush" }, { steps += "terminate" })
             assertEquals(listOf("checkpoint", "launch", "finish", "flush", "terminate"), steps)
         }
+    }
+
+    @Test fun theOwnedProcessEndsOnlyOnceTheRelayCoversIt() {
+        val steps = mutableListOf<String>()
+        var covered: (() -> Unit)? = null
+        performPrototypeRestart("app:prototype_cached_player", "app", true, { steps += "checkpoint" },
+            { steps += "launch" }, { steps += "finish" }, { covered = it }, { steps += "flush" }, { steps += "terminate" })
+        assertEquals(listOf("checkpoint", "launch", "finish"), steps)
+        checkNotNull(covered).invoke()
+        assertEquals(listOf("checkpoint", "launch", "finish", "flush", "terminate"), steps)
     }
 
     @Test fun mainAndOtherProcessesCannotBeTerminated() {
@@ -32,7 +43,7 @@ class PrototypeRestartTest {
             var called = false
             assertThrows(IllegalStateException::class.java) {
                 performPrototypeRestart(process, "app", true,
-                    { called = true }, { called = true }, { called = true }, { called = true }, { called = true })
+                    { called = true }, { called = true }, { called = true }, { called = true; it() }, { called = true }, { called = true })
             }
             assertFalse(called)
         }
@@ -51,7 +62,7 @@ class PrototypeRestartTest {
         var beforeFlush = -1
         var durable: List<FailureStage>? = null
         performPrototypeRestart("app:prototype_player", "app", false, {}, {},
-            finish = { beforeFlush = FailureJournal(file).read().size },
+            finish = { beforeFlush = FailureJournal(file).read().size }, afterCovered = { it() },
             flush = { assertTrue(writer.flush(RESTART_JOURNAL_FLUSH_MS)) },
             terminate = { durable = FailureJournal(file).read().map { it.stage } })
         // Without the flush, termination here would have lost queued records.
@@ -68,12 +79,12 @@ class PrototypeRestartTest {
             FailureReporter(writer::submit).report(FailureStage.PLAYER_RELEASE)
             val steps = mutableListOf<String>()
             val began = System.nanoTime()
-            performPrototypeRestart("app:prototype_cached_player", "app", true, {}, {}, {},
+            performPrototypeRestart("app:prototype_cached_player", "app", true, {}, {}, {}, { it() },
                 flush = { steps += "flush=${writer.flush(100)}" }, terminate = { steps += "terminate" })
             assertTrue(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - began) < RESTART_JOURNAL_FLUSH_MS)
             assertEquals(listOf("flush=false", "terminate"), steps)
             steps.clear()
-            performPrototypeRestart("app:prototype_cached_player", "app", true, {}, {}, {},
+            performPrototypeRestart("app:prototype_cached_player", "app", true, {}, {}, {}, { it() },
                 flush = { steps += "flush"; throw IllegalStateException("synthetic") }, terminate = { steps += "terminate" })
             assertEquals(listOf("flush", "terminate"), steps)
         } finally { release.countDown() }
@@ -86,7 +97,7 @@ class PrototypeRestartTest {
             fun step(name: String) { steps += name; if (name == failAt) throw failure }
             assertSame(failure, assertThrows(IllegalStateException::class.java) {
                 performPrototypeRestart("app:prototype_cached_player", "app", true,
-                    { step("checkpoint") }, { step("launch") }, { step("finish") }, { step("flush") }, { step("terminate") })
+                    { step("checkpoint") }, { step("launch") }, { step("finish") }, { it() }, { step("flush") }, { step("terminate") })
             })
             assertEquals(if (failAt == "checkpoint") listOf("checkpoint") else listOf("checkpoint", "launch"), steps)
         }

@@ -10,8 +10,6 @@ import android.os.Looper
 import android.os.Process
 import android.os.SystemClock
 import android.widget.Button
-import android.widget.LinearLayout
-import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.annotation.OptIn
 import androidx.media3.common.util.UnstableApi
@@ -30,6 +28,8 @@ class PlaybackRestartActivity : ComponentActivity() {
     private var priorPid = 0
     private var resumed = false
     private var opened = false
+    // The player reopens only once "Restarting the player…" has been readable (#784).
+    private val message = RestartMessageHold(this)
     private val poll = Runnable { checkExit() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -83,6 +83,7 @@ class PlaybackRestartActivity : ComponentActivity() {
         when (current.poll(SystemClock.elapsedRealtime(), processes)) {
             PlaybackRestartStatus.WAITING -> handler.postDelayed(poll, 50)
             PlaybackRestartStatus.READY -> {
+                if (!message.ready()) { handler.postDelayed(poll, 50); return }
                 opened = true
                 try {
                     startActivity(Intent(this, CachedPrototypeActivity::class.java)
@@ -94,18 +95,16 @@ class PlaybackRestartActivity : ComponentActivity() {
         }
     }
 
-    private fun layout(message: String) = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL
-        val padding = (24 * resources.displayMetrics.density).toInt()
-        setPadding(padding, padding, padding, padding)
-        addView(TextView(this@PlaybackRestartActivity).apply { text = message })
-    }
+    private fun showWaiting() { message.show("Restarting the player…") }
 
-    private fun showWaiting() { setContentView(layout("Restarting the player…")) }
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        message.focusChanged()
+    }
 
     private fun showFailure() {
         handler.removeCallbacks(poll)
-        setContentView(layout("The player could not be restarted safely. Saved setup and picker choices have been kept.").apply {
+        setContentView(restartRelayLayout(this, "The player could not be restarted safely. Saved setup and picker choices have been kept.").apply {
             if (coordinator != null) addView(Button(this@PlaybackRestartActivity).apply {
                 text = "Check again"
                 setOnClickListener {

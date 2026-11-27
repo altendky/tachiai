@@ -9,4 +9,9 @@
         <item name="android:statusBarColor">@color/prototype_background</item>
         <item name="android:navigationBarColor">@color/prototype_background</item>
     </style>
+    <!-- #784: no starting window, so a cold picker start (the viewer restart)
+         keeps the previous screen until the picker draws, not a blank page. -->
+    <style name="Theme.Tachiai.Prototype.Picker" parent="Theme.Tachiai.Prototype">
+        <item name="android:windowDisablePreview">true</item>
+    </style>
 </resources>

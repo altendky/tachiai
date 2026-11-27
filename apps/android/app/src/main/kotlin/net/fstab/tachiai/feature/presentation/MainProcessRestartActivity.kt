@@ -9,13 +9,8 @@ import android.os.Handler
 import android.os.Looper
 import android.os.Process
 import android.os.SystemClock
-import android.view.ViewTreeObserver
 import android.widget.Button
-import android.widget.LinearLayout
-import android.widget.TextView
 import androidx.activity.ComponentActivity
-import androidx.core.view.ViewCompat
-import androidx.core.view.WindowInsetsCompat
 import net.fstab.tachiai.MainActivity
 
 /** Same-app relay in its own process (#764); it never terminates a supplied process. */
@@ -32,12 +27,8 @@ class MainProcessRestartActivity : ComponentActivity() {
     private var priorPid = 0
     private var resumed = false
     private var opened = false
-    // When "Restarting Tachiai…" was first on screen, and when the old process was first seen gone (#773).
-    // A first draw can precede the window replacing its starting window, so
-    // the message counts as shown once it has drawn and the window has focus.
-    private var messageDrawn = false
-    private var messageDrawnAt = -1L
-    private var readyAt = -1L
+    // Tachiai reopens only once "Restarting Tachiai…" has been readable (#773).
+    private val message = RestartMessageHold(this)
     private val poll = Runnable { checkExit() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -91,11 +82,7 @@ class MainProcessRestartActivity : ComponentActivity() {
         when (current.poll(SystemClock.elapsedRealtime(), processes)) {
             PlaybackRestartStatus.WAITING -> handler.postDelayed(poll, 50)
             PlaybackRestartStatus.READY -> {
-                val now = SystemClock.elapsedRealtime()
-                if (readyAt < 0) readyAt = now
-                if (!restartMessageShown(now, messageDrawnAt.takeIf { it >= 0 }, readyAt)) {
-                    handler.postDelayed(poll, 50); return
-                }
+                if (!message.ready()) { handler.postDelayed(poll, 50); return }
                 opened = true
                 try {
                     // The launcher form opens the main menu in debug builds too.
@@ -109,44 +96,16 @@ class MainProcessRestartActivity : ComponentActivity() {
         }
     }
 
-    private fun layout(message: String) = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL
-        val padding = (24 * resources.displayMetrics.density).toInt()
-        setPadding(padding, padding, padding, padding)
-        // The window is edge to edge; keep the text clear of the system bars (#773).
-        ViewCompat.setOnApplyWindowInsetsListener(this) { view, insets ->
-            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
-            view.setPadding(bars.left + padding, bars.top + padding, bars.right + padding, bars.bottom + padding); insets
-        }
-        addView(TextView(this@MainProcessRestartActivity).apply { text = message })
-    }
-
-    private fun showWaiting() {
-        messageDrawn = false; messageDrawnAt = -1L; readyAt = -1L
-        val view = layout("Restarting Tachiai…")
-        setContentView(view)
-        // Tachiai reopens only once this message has reached the screen (#773).
-        view.viewTreeObserver.addOnDrawListener(object : ViewTreeObserver.OnDrawListener {
-            override fun onDraw() {
-                messageDrawn = true
-                markMessageShown()
-                view.post { if (view.viewTreeObserver.isAlive) view.viewTreeObserver.removeOnDrawListener(this) }
-            }
-        })
-    }
+    private fun showWaiting() { message.show("Restarting Tachiai…") }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        markMessageShown()
-    }
-
-    private fun markMessageShown() {
-        if (messageDrawn && messageDrawnAt < 0 && hasWindowFocus()) messageDrawnAt = SystemClock.elapsedRealtime()
+        message.focusChanged()
     }
 
     private fun showFailure() {
         handler.removeCallbacks(poll)
-        setContentView(layout("Tachiai could not be restarted safely. Saved app data has been kept.").apply {
+        setContentView(restartRelayLayout(this, "Tachiai could not be restarted safely. Saved app data has been kept.").apply {
             if (coordinator != null) addView(Button(this@MainProcessRestartActivity).apply {
                 text = "Check again"
                 setOnClickListener {

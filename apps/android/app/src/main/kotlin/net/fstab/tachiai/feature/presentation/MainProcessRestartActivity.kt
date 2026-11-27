@@ -14,6 +14,8 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.activity.ComponentActivity
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import net.fstab.tachiai.MainActivity
 
 /** Same-app relay in its own process (#764); it never terminates a supplied process. */
@@ -108,6 +110,11 @@ class MainProcessRestartActivity : ComponentActivity() {
         orientation = LinearLayout.VERTICAL
         val padding = (24 * resources.displayMetrics.density).toInt()
         setPadding(padding, padding, padding, padding)
+        // The window is edge to edge; keep the text clear of the system bars (#773).
+        ViewCompat.setOnApplyWindowInsetsListener(this) { view, insets ->
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
+            view.setPadding(bars.left + padding, bars.top + padding, bars.right + padding, bars.bottom + padding); insets
+        }
         addView(TextView(this@MainProcessRestartActivity).apply { text = message })
     }
 

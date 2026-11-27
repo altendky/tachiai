@@ -172,7 +172,8 @@ provider and shows "Restarting Tachiai…" while the main process ends. The
 message stays at least half a second once it appears, so it can be read. If it
 can't appear within a second of the old process ending, the restart goes on
 without it. The relay and Tachiai's starting window follow the device's light
-or dark mode, so the restart never flashes the opposite theme
+or dark mode, and the main process ends only once the relay covers the page, so
+the restart shows no black or opposite-theme screen
 ([#773](https://github.com/altendky/tachiai/issues/773)). Tachiai
 then reopens at the main menu. If the restart can't be confirmed, the relay
 says "Tachiai could not be restarted safely. Saved app data has been kept."

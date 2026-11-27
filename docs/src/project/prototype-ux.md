@@ -641,7 +641,9 @@ feeds unassigned and requires recovery rather than selecting default identities.
 While the old player process ends, the relay shows "Restarting the player…"
 the same way as the main-process restart above: the process ends only once the
 relay covers the picker, and the message stays at least half a second once it
-appears ([#784](https://github.com/altendky/tachiai/issues/784)). Until saved
+appears ([#784](https://github.com/altendky/tachiai/issues/784)). The picker
+opens without a starting page, so the message stays until the new picker draws
+instead of a blank page; a launcher start keeps its splash until then. Until saved
 setup is first read, the picker shows no streams list or setup messages, so a
 fresh picker never flashes "No configured streams" or a removed-item message
 for streams it has not loaded yet.

@@ -1061,8 +1061,9 @@ account or provider value is logged:
 - `startupCleanup=POISONED cause=… [scope=…] retired=… poisoned=…`, once for
   each retired scope that becomes poisoned. `cause` is `SCOPE_UNCONFIRMED` (the
   scope reported its own unconfirmed cleanup), `CLOSE_UNCONFIRMED` (its close
-  finished without confirming), `CANCEL_FAILED` or `QUEUE_REJECTED` (the
-  cleanup worker refused the close). `scope` gives the scope's first reason:
+  finished without confirming), `CANCEL_FAILED`, `QUEUE_REJECTED` (the
+  cleanup worker refused the close) or `DEBUG_FAULT` (the debug
+  `startup-cleanup-fault` trigger). `scope` gives the scope's first reason:
   `LEASE_CLEANUP` (a lease's close didn't confirm), `LEASE_CANCEL` (a lease's
   cancellation signal failed), `ATTEMPT` (a startup attempt reported
   unconfirmed cleanup), `LATE_LEASE` (a resource arrived after its attempt had
@@ -1070,7 +1071,10 @@ account or provider value is logged:
   `poisoned` count that instance's retained scopes.
 - `screen=PROVIDER_DETAILS|MANAGE_STREAMS service=… admission=… waitedMs=…`,
   when the screen's wait returns `CLEANUP_UNCONFIRMED` or `DEADLINE` (45 s)
-  instead of `READY`. `service` is the provider type, such as `ABEMA`.
+  instead of `READY`. `service` is the provider type, such as `ABEMA`. For
+  `CLEANUP_UNCONFIRMED`, the page offers a restart
+  ([main flow and settings](prototype-ux.md#main-flow-and-settings--october-16)); a failed restart is
+  journaled as `RECOVERY_RESTART`.
 
 JVM tests close the catalog on another thread while the scope retires, and
 cancel a channel request that releases its route afterwards. Both confirm, and

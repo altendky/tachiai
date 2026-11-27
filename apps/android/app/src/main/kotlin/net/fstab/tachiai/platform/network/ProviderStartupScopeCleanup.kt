@@ -15,7 +15,7 @@ internal interface ProviderStartupCleanupResource : AutoCloseable {
 }
 
 // Closed cause of a retired scope's poison (#764), for diagnostics only.
-internal enum class ProviderStartupCleanupPoison { CLOSE_UNCONFIRMED, SCOPE_UNCONFIRMED, CANCEL_FAILED, QUEUE_REJECTED }
+internal enum class ProviderStartupCleanupPoison { CLOSE_UNCONFIRMED, SCOPE_UNCONFIRMED, CANCEL_FAILED, QUEUE_REJECTED, DEBUG_FAULT }
 
 // Only retired scopes are registered. Healthy active scopes do not block an
 // independent new owner. An unconfirmed retirement is retained and never retried
@@ -39,6 +39,18 @@ internal class ProviderStartupCleanupRegistry(private val worker: Executor,
         }, scope::observeCleanupFailure) { scope.cleanupUncertainty }
 
     internal fun retire(instanceId: String, resource: ProviderStartupCleanupResource) = retire(instanceId, resource, resource)
+
+    // Debug fault only (#764): retain a synthetic poisoned retirement, as an
+    // unconfirmed one would be, without touching any real scope.
+    internal fun poisonForDebug(instanceId: String) {
+        require(validProviderInstanceId(instanceId))
+        val synthetic = object : ProviderStartupCleanupResource {
+            override fun cancel() {}
+            override fun close() {}
+            override val cleanupConfirmed get() = false
+        }
+        poison(instanceId, Retired(synthetic, synthetic) { null }, ProviderStartupCleanupPoison.DEBUG_FAULT)
+    }
 
     private fun retire(instanceId: String, identity: Any, resource: ProviderStartupCleanupResource,
         observeFailure: ((() -> Unit) -> Unit)? = null, uncertainty: () -> ProviderStartupUncertainty? = { null }) {
@@ -130,7 +142,10 @@ internal object ProviderStartupScopeCleanup {
     private val registry = ProviderStartupCleanupRegistry(worker, ::event, SystemClock::elapsedRealtime)
     // Closed gate lines only (#764); never an instance, route or provider value.
     internal fun event(text: String) { runCatching { android.util.Log.i("TachiaiStartupCleanup", text) } }
-    fun retire(instanceId: String, scope: ProviderRouteStartup) = registry.retire(instanceId, scope)
+    fun retire(instanceId: String, scope: ProviderRouteStartup) {
+        registry.retire(instanceId, scope)
+        if (DebugStartupCleanupFaults.take()) registry.poisonForDebug(instanceId)
+    }
     fun isReady(instanceId: String) = registry.isReady(instanceId)
     fun isPoisoned(instanceId: String) = registry.isPoisoned(instanceId)
     fun awaitReady(instanceId: String, absoluteDeadline: Long, canUse: () -> Boolean) =

@@ -21,6 +21,12 @@
             android:exported="true"
             android:permission="android.permission.DUMP"
             android:process=":prototype_cached_player" />
+        <!-- Startup cleanup fault trigger (#764): shell only, in the default process. -->
+        <provider
+            android:name=".platform.network.StartupCleanupFaultTriggerProvider"
+            android:authorities="${applicationId}.debug.startup-cleanup-fault"
+            android:exported="true"
+            android:permission="android.permission.DUMP" />
         <activity
             android:name=".feature.diagnostic.InspectionControlActivity"
             android:theme="@style/Theme.Tachiai.Prototype"

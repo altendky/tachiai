@@ -75,6 +75,24 @@ class ProviderStartupScopeCleanupTest {
         assertTrue((lines + rejected).none { it.contains(id) || it.contains(otherId) })
     }
 
+    @Test fun debugFaultPoisonsOnlyItsInstanceAndArmsOnce() {
+        val queue = Queue(); val lines = mutableListOf<String>()
+        val registry = ProviderStartupCleanupRegistry(queue, lines::add) { 100 }
+        registry.poisonForDebug(id)
+        assertEquals(ProviderStartupCleanupAdmission.CLEANUP_UNCONFIRMED, registry.awaitReady(id, 200) { true })
+        assertTrue(registry.isPoisoned(id)); assertTrue(registry.isReady(otherId))
+        assertEquals(listOf("startupCleanup=POISONED cause=DEBUG_FAULT retired=1 poisoned=1"), lines)
+        if (!net.fstab.tachiai.BuildConfig.DEBUG) {
+            assertEquals(DebugStartupCleanupFaultResult.UNAVAILABLE, DebugStartupCleanupFaults.arm())
+            assertFalse(DebugStartupCleanupFaults.take()); return
+        }
+        assertEquals(DebugStartupCleanupFaultResult.ARMED, DebugStartupCleanupFaults.arm())
+        assertTrue(DebugStartupCleanupFaults.take()); assertFalse(DebugStartupCleanupFaults.take())
+        DebugStartupCleanupFaults.arm()
+        assertEquals(DebugStartupCleanupFaultResult.CLEARED, DebugStartupCleanupFaults.clear())
+        assertFalse(DebugStartupCleanupFaults.take())
+    }
+
     @Test fun allRetirementsForOneInstanceMustConfirmBeforeAnotherStartupCanPass() {
         val queue = Queue(); val registry = ProviderStartupCleanupRegistry(queue) { 100 }
         registry.retire(id, Resource()); registry.retire(id, Resource())

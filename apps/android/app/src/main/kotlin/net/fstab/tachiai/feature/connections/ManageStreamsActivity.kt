@@ -243,10 +243,15 @@ class ManageStreamsActivity : ComponentActivity() {
                     message = "Choose a route to use this provider."
                     return@launch
                 }
+                val waitBegan = android.os.SystemClock.elapsedRealtime()
                 val cleanup = withContext(Dispatchers.IO) { ProviderStartupScopeCleanup.awaitReady(id,
                     android.os.SystemClock.elapsedRealtime() + 45_000L, { resumed && revision == current }) }
                 if (!resumed || revision != current) return@launch
                 if (cleanup != ProviderStartupCleanupAdmission.READY) {
+                    // Closed gate result (#764): no instance, route or provider value.
+                    ProviderStartupScopeCleanup.event("screen=${if (providerDetails) "PROVIDER_DETAILS" else "MANAGE_STREAMS"} " +
+                        "service=${routeScope.configuredInstance.service.name} admission=${cleanup.name} " +
+                        "waitedMs=${(android.os.SystemClock.elapsedRealtime() - waitBegan).coerceIn(0, 60_000)}")
                     reading = false; message = "The previous connection has not finished closing. Retry shortly."
                     startupStatus = "Waiting for connection cleanup"
                     return@launch

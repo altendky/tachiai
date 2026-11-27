@@ -14,11 +14,18 @@ internal interface ProviderStartupCleanupResource : AutoCloseable {
     val cleanupConfirmed: Boolean
 }
 
+// Closed cause of a retired scope's poison (#764), for diagnostics only.
+internal enum class ProviderStartupCleanupPoison { CLOSE_UNCONFIRMED, SCOPE_UNCONFIRMED, CANCEL_FAILED, QUEUE_REJECTED }
+
 // Only retired scopes are registered. Healthy active scopes do not block an
 // independent new owner. An unconfirmed retirement is retained and never retried
 // to manufacture a successful second close receipt.
-internal class ProviderStartupCleanupRegistry(private val worker: Executor, private val nowElapsedMs: () -> Long) {
-    private class Retired(val identity: Any, val resource: ProviderStartupCleanupResource) {
+internal class ProviderStartupCleanupRegistry(private val worker: Executor,
+    // Closed lines only (#764): a cause and counts, never an instance or route.
+    private val log: (String) -> Unit = {},
+    private val nowElapsedMs: () -> Long) {
+    private class Retired(val identity: Any, val resource: ProviderStartupCleanupResource,
+        val uncertainty: () -> ProviderStartupUncertainty?) {
         var poisoned = false
     }
     private val lock = Object()
@@ -29,27 +36,27 @@ internal class ProviderStartupCleanupRegistry(private val worker: Executor, priv
             override fun cancel() = scope.cancel()
             override fun close() = scope.close()
             override val cleanupConfirmed get() = scope.cleanupConfirmed
-        }, scope::observeCleanupFailure)
+        }, scope::observeCleanupFailure) { scope.cleanupUncertainty }
 
     internal fun retire(instanceId: String, resource: ProviderStartupCleanupResource) = retire(instanceId, resource, resource)
 
     private fun retire(instanceId: String, identity: Any, resource: ProviderStartupCleanupResource,
-        observeFailure: ((() -> Unit) -> Unit)? = null) {
+        observeFailure: ((() -> Unit) -> Unit)? = null, uncertainty: () -> ProviderStartupUncertainty? = { null }) {
         require(validProviderInstanceId(instanceId))
         val record = synchronized(lock) {
             val records = retired.getOrPut(instanceId) { mutableListOf() }
             if (records.any { it.identity === identity }) return
-            Retired(identity, resource).also { records += it; lock.notifyAll() }
+            Retired(identity, resource, uncertainty).also { records += it; lock.notifyAll() }
         }
-        observeFailure?.invoke { poison(instanceId, record) }
+        observeFailure?.invoke { poison(instanceId, record, ProviderStartupCleanupPoison.SCOPE_UNCONFIRMED) }
         // Register before signalling, so a replacement worker cannot pass the
         // gate between lifecycle cancellation and ownership of the old scope.
-        if (runCatching { resource.cancel() }.isFailure) poison(instanceId, record)
+        if (runCatching { resource.cancel() }.isFailure) poison(instanceId, record, ProviderStartupCleanupPoison.CANCEL_FAILED)
         try {
             worker.execute {
                 val confirmed = runCatching { resource.close(); resource.cleanupConfirmed }.getOrDefault(false)
+                if (!confirmed) poison(instanceId, record, ProviderStartupCleanupPoison.CLOSE_UNCONFIRMED)
                 synchronized(lock) {
-                    if (!confirmed) record.poisoned = true
                     if (!record.poisoned) {
                         retired[instanceId]?.let { records ->
                             records.remove(record)
@@ -59,14 +66,23 @@ internal class ProviderStartupCleanupRegistry(private val worker: Executor, priv
                     lock.notifyAll()
                 }
             }
-        } catch (_: Throwable) { poison(instanceId, record) }
+        } catch (_: Throwable) { poison(instanceId, record, ProviderStartupCleanupPoison.QUEUE_REJECTED) }
     }
 
-    private fun poison(instanceId: String, record: Retired) = synchronized(lock) {
-        record.poisoned = true
-        val records = retired.getOrPut(instanceId) { mutableListOf() }
-        if (records.none { it === record }) records += record
-        lock.notifyAll()
+    private fun poison(instanceId: String, record: Retired, cause: ProviderStartupCleanupPoison) {
+        // Read outside this monitor: the scope's own lock is never nested in it.
+        val scope = runCatching(record.uncertainty).getOrNull()
+        val line = synchronized(lock) {
+            val first = !record.poisoned
+            record.poisoned = true
+            val records = retired.getOrPut(instanceId) { mutableListOf() }
+            if (records.none { it === record }) records += record
+            lock.notifyAll()
+            // Only a retirement's first cause is logged.
+            if (first) "startupCleanup=POISONED cause=${cause.name}" + (scope?.let { " scope=${it.name}" } ?: "") +
+                " retired=${records.size} poisoned=${records.count { it.poisoned }}" else null
+        }
+        if (line != null) runCatching { log(line) }
     }
 
     // Memory-only gate suitable for existing request/lifecycle predicates.
@@ -111,7 +127,9 @@ internal class ProviderStartupCleanupRegistry(private val worker: Executor, priv
 internal object ProviderStartupScopeCleanup {
     private val worker = ThreadPoolExecutor(2, 2, 0, TimeUnit.MILLISECONDS, ArrayBlockingQueue(32),
         { task -> Thread(task, "provider-startup-cleanup").apply { isDaemon = true } }, ThreadPoolExecutor.AbortPolicy())
-    private val registry = ProviderStartupCleanupRegistry(worker, SystemClock::elapsedRealtime)
+    private val registry = ProviderStartupCleanupRegistry(worker, ::event, SystemClock::elapsedRealtime)
+    // Closed gate lines only (#764); never an instance, route or provider value.
+    internal fun event(text: String) { runCatching { android.util.Log.i("TachiaiStartupCleanup", text) } }
     fun retire(instanceId: String, scope: ProviderRouteStartup) = registry.retire(instanceId, scope)
     fun isReady(instanceId: String) = registry.isReady(instanceId)
     fun isPoisoned(instanceId: String) = registry.isPoisoned(instanceId)

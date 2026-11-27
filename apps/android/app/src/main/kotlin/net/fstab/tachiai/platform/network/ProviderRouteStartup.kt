@@ -46,6 +46,8 @@ internal sealed interface ProviderStartupResult<out T> {
 internal enum class ProviderStartupPhase {
     IDLE, TRYING, CLEANING, SELECTED, HELD_FOR_MUTATION, FAILED, CANCELLED, EXPIRED, REVOKED, CLEANUP_UNCONFIRMED,
 }
+// Closed first cause of a scope's unconfirmed cleanup (#764), for diagnostics only.
+internal enum class ProviderStartupUncertainty { LEASE_CLEANUP, LEASE_CANCEL, ATTEMPT, LATE_LEASE, QUARANTINED }
 internal data class ProviderStartupProgress(val phase: ProviderStartupPhase, val ordinal: Int, val count: Int,
     val label: String? = null, val failure: ProviderStartupFailure? = null, val exhausted: Boolean = false)
 
@@ -108,6 +110,8 @@ internal class ProviderRouteStartup(
     @Volatile var progress = ProviderStartupProgress(ProviderStartupPhase.IDLE, 0, pool.candidates.size)
         private set
     val cleanupConfirmed get() = synchronized(lock) { leases.isEmpty() }
+    private var uncertainty: ProviderStartupUncertainty? = null
+    val cleanupUncertainty get() = synchronized(lock) { uncertainty }
 
     init { require(pool.candidates.size <= MAX_PROVIDER_ROUTES && deadlineElapsedMs >= 0) }
 
@@ -130,9 +134,17 @@ internal class ProviderRouteStartup(
         else -> ProviderStartupPhase.FAILED
     }
 
+    private fun stopUnconfirmed(cause: ProviderStartupUncertainty) {
+        synchronized(lock) { if (uncertainty == null) uncertainty = cause }
+        stop(ProviderStartupRejection(ProviderStartupFailure.CLEANUP_UNCONFIRMED))
+    }
+
     private fun stop(failure: ProviderStartupRejection) {
         val actual = synchronized(lock) {
             if (failure.reason == ProviderStartupFailure.DEADLINE && selectedRoute != null) return
+            // An attempt's own CLEANUP_UNCONFIRMED rejection arrives here directly.
+            if (failure.reason == ProviderStartupFailure.CLEANUP_UNCONFIRMED && uncertainty == null)
+                uncertainty = ProviderStartupUncertainty.ATTEMPT
             if (stopped == null || failure.reason == ProviderStartupFailure.CLEANUP_UNCONFIRMED) stopped = failure
             checkNotNull(stopped)
         }
@@ -162,7 +174,8 @@ internal class ProviderRouteStartup(
         pending.forEach { receipt ->
             try {
                 if (runCatching { receipt.lease.cancel() }.isFailure) {
-                    synchronized(lock) { receipt.cancellationFailed = true; stopped = ProviderStartupRejection(ProviderStartupFailure.CLEANUP_UNCONFIRMED) }
+                    synchronized(lock) { receipt.cancellationFailed = true; stopped = ProviderStartupRejection(ProviderStartupFailure.CLEANUP_UNCONFIRMED)
+                        if (uncertainty == null) uncertainty = ProviderStartupUncertainty.LEASE_CANCEL }
                     publish(ProviderStartupPhase.CLEANUP_UNCONFIRMED, failure = ProviderStartupFailure.CLEANUP_UNCONFIRMED)
                     notifyCleanupFailure()
                 }
@@ -180,7 +193,7 @@ internal class ProviderRouteStartup(
         // This predicate is a cheap process-memory quarantine gate. Protected
         // pool/profile reconciliation remains confined to current() on workers.
         if (!runCatching(canPublishLocally).getOrDefault(false)) {
-            stop(ProviderStartupRejection(ProviderStartupFailure.CLEANUP_UNCONFIRMED)); return false
+            stopUnconfirmed(ProviderStartupUncertainty.QUARANTINED); return false
         }
         if (selectedRoute == null && nowElapsedMs() >= deadlineElapsedMs) { stop(ProviderStartupRejection(ProviderStartupFailure.DEADLINE)); return false }
         return true
@@ -226,7 +239,7 @@ internal class ProviderRouteStartup(
             if (!receipt.confirmed) confirmed = false
             else synchronized(lock) { leases.remove(receipt.lease) }
         }
-        if (!confirmed) stop(ProviderStartupRejection(ProviderStartupFailure.CLEANUP_UNCONFIRMED))
+        if (!confirmed) stopUnconfirmed(ProviderStartupUncertainty.LEASE_CLEANUP)
         return confirmed
     }
 
@@ -287,7 +300,7 @@ internal class ProviderRouteStartup(
                             own(lease)
                             // Late allocation after a failed attempt's cleanup
                             // cannot be adopted by a newer winning candidate.
-                            if (!attemptActive.get() && !closed.get()) stop(ProviderStartupRejection(ProviderStartupFailure.CLEANUP_UNCONFIRMED))
+                            if (!attemptActive.get() && !closed.get()) stopUnconfirmed(ProviderStartupUncertainty.LATE_LEASE)
                         })
                     val result = try { attempt(owner, context) } catch (error: Throwable) {
                         val evidence = providerTransportEvidence(error)

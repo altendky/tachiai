@@ -91,13 +91,37 @@ on the device:
   per source language, through Android's DownloadManager on the system network.
   Provider routes are not used for it.
 - ML Kit's [data disclosure](https://developers.google.com/ml-kit/android-data-disclosure)
-  lists diagnostics it collects: device and app information, latency, input and
-  output sizes, the configured language pair and identified languages. It does
-  not list the text. Its startup provider is removed, so ML Kit is not
-  initialized until translation is on. No network capture has confirmed what
-  it sends.
+  lists diagnostics it collects: device and app information, per-installation
+  identifiers, latency, input and output sizes, the configured language pair and
+  identified languages. It does not list the text. Its startup provider is
+  removed, so ML Kit is not initialized until translation is on. Reading the
+  linked libraries (ML Kit common 18.11.0, translate 17.0.3, language ID 17.0.6)
+  for [#751](https://github.com/altendky/tachiai/issues/751) found three ways
+  data leaves the app:
+  - **`FIREBASE_ML_SDK` events** go through Google's datatransport to its
+    Firelog backend. The manifest removes that backend's registration, so
+    datatransport refuses each event before storing it. None is saved or
+    uploaded.
+  - **Google Play services telemetry** (API `mlkit:natural_language`): after a
+    translation or language identification, a record with a method code,
+    status and timings is handed to Play services, if installed.
+  - **Firebase Installations and Remote Config requests** fetch translation
+    rule updates. They carry a Firebase installation ID, the app ID, package
+    and signing-certificate hash, app version, country, language, Android
+    version and time zone.
+
+  ML Kit has no supported switch for the last two; they are deferred to
+  [#755](https://github.com/altendky/tachiai/issues/755). No network capture
+  has confirmed what any of them sends.
 - Translations are cached in memory only, keyed by source text and language
-  pair, with no provider identity or account data. They are never logged.
+  pair, with no provider identity or account data. Tachiai never logs them.
+  ML Kit's native translator writes the source text and its translation to the
+  device's logcat at I and D levels, and has no supported switch to stop it. On
+  2026-11-26 the user accepted this
+  ([#751](https://github.com/altendky/tachiai/issues/751), see
+  [protected media](#protected-media-handling--clarified-2026-11-23)).
+  Replacing ML Kit is a later consideration in
+  [#754](https://github.com/altendky/tachiai/issues/754).
 - The stored preference holds only the on/off switch and per-instance Source
   language choices, in its own encrypted no-backup record.
 - Search, matching, saved items and identities keep the original text.
@@ -136,7 +160,12 @@ without a separate exception:
   the running state, reset causes, name-pairing geometry (counts, overlap and
   gap ratios, pixel heights) and, for each discontinuity or position jump, the
   Media3 reason, period indexes and stream positions and deltas in
-  milliseconds. Failures are logged without exception text.
+  milliseconds. Failures are logged without exception text. ML Kit's native
+  translator writes recognized text and its translations to the device's
+  logcat ([Provider text translation](#provider-text-translation--643)). The
+  user accepted this on 2026-11-26 as the only exception to the protected-media
+  rule's "not logged" condition
+  ([#751](https://github.com/altendky/tachiai/issues/751)).
 - **Unreadable frames.** A feed decoded through a secure path (for example a
   future Widevine feed) is reported as unavailable for this feed. Tachiai does
   not change surfaces, decoders or DRM to read it.
@@ -147,8 +176,11 @@ without a separate exception:
   recognition, like translation, reports device and app information,
   per-installation identifiers, latency, API configuration such as image
   format and resolution, input and output sizes, event types and error codes.
-  It does not list images or text. The setting's help says so. No network
-  capture has confirmed what it sends.
+  It does not list images or text. The setting's help says so. Recognition
+  sends these as `FIREBASE_ML_SDK` events, which datatransport refuses without
+  storing them, as for translation. Translation's other channels are described
+  under [Provider text translation](#provider-text-translation--643). No network
+  capture has confirmed what ML Kit sends.
 
 ## Twitch live low latency — 2026-11-22
 
@@ -310,6 +342,16 @@ audio and text derived from them are not persisted, logged or sent off the
 device. User-controlled screenshots remain allowed as before. This replaces
 the earlier "must not capture, record or re-encode protected video" wording,
 which was broader than intended.
+
+On 2026-11-26 the user accepted one narrow exception
+([#751](https://github.com/altendky/tachiai/issues/751)): ML Kit's native
+translator writes recognized frame text and its translations to the device's
+logcat, and that may continue. No separate process, log floor or replacement
+translator will be built for it. The exception covers only ML Kit's own logcat
+output on the device. Tachiai's own code still must not log, persist or send
+frame-derived text. ML Kit's other off-device channels are deferred to
+[#755](https://github.com/altendky/tachiai/issues/755), and replacing ML Kit is
+a later consideration in [#754](https://github.com/altendky/tachiai/issues/754).
 
 Keep provider-controlled authentication, protected local grants, selected-route
 ownership and safe diagnostics. The local inspection exception below permits

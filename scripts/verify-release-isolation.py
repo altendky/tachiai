@@ -37,6 +37,10 @@ REQUIRED_COMPONENTS = {
         ".provider.abema.account.AbemaAccountAccessService",
     },
 }
+# ML Kit initializes only on first use, and its FIREBASE_ML_SDK diagnostics have
+# no datatransport backend to be stored for or uploaded to (#643, #751).
+MLKIT_STARTUP_PROVIDER = "com.google.mlkit.common.internal.MlKitInitProvider"
+TRANSPORT_BACKEND_DISCOVERY = "com.google.android.datatransport.runtime.backends.TransportBackendDiscovery"
 REQUIRED_ASSETS = {
     f"abema/{stem}{suffix}"
     for stem in ("native-bootstrap", "metadata-runtime")
@@ -116,6 +120,11 @@ def verify(manifest, asset_paths, source_manifests, application_id):
         target = node.get(ANDROID + "targetActivity")
         if component in forbidden or (target and qualified(target, application_id) in forbidden):
             raise IsolationFailure("DIAGNOSTIC_COMPONENT")
+        if component == MLKIT_STARTUP_PROVIDER:
+            raise IsolationFailure("MLKIT_STARTUP_PROVIDER")
+        if component == TRANSPORT_BACKEND_DISCOVERY and any(
+                (data.get(ANDROID + "name") or "").startswith("backend:") for data in node.iter("meta-data")):
+            raise IsolationFailure("TELEMETRY_BACKEND")
         present.setdefault((node.tag, component), []).append(node)
     for kind, names in REQUIRED_COMPONENTS.items():
         for name in names:
@@ -317,6 +326,16 @@ class IsolationTests(unittest.TestCase):
                         '<service android:name=".provider.abema.account.AbemaRenewalNetworkParcelProbeService" />',
                         '<activity-alias android:name=".Alias" android:targetActivity=".feature.diagnostic.AbemaCachedHelperActivity" />'):
             with self.assertRaises(IsolationFailure):
+                self.check(fixture(primary_content() + content))
+
+    def test_mlkit_startup_provider_or_telemetry_backend_refuse(self):
+        discovery = f'<service android:name="{TRANSPORT_BACKEND_DISCOVERY}" android:exported="false">{{}}</service>'
+        self.check(fixture(primary_content() + discovery.format("")))
+        for content in (f'<provider android:name="{MLKIT_STARTUP_PROVIDER}" android:authorities="a.mlkitinitprovider" />',
+                        discovery.format('<meta-data android:name="backend:com.google.android.datatransport.cct.CctBackendFactory"'
+                                         ' android:value="cct" />'),
+                        discovery.format('<meta-data android:name="backend:example.OtherBackendFactory" android:value="other" />')):
+            with self.subTest(content=content), self.assertRaises(IsolationFailure):
                 self.check(fixture(primary_content() + content))
 
     def test_diagnostic_assets_refuse(self):

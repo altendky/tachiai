@@ -84,7 +84,10 @@ allowed: in-memory buffering (such as the live rewind buffer), seeking and
 time-shifting, audio mixing and overlays, and on-the-fly analysis such as
 on-screen text recognition and translation, provided frames, audio and text
 derived from them are not persisted, logged or sent off the device (user
-decision, 2026-11-23).
+decision, 2026-11-23). On 2026-11-26 the user accepted one exception: ML Kit's
+on-device translator writes recognized text and its translations to the
+device's logcat ([#751](https://github.com/altendky/tachiai/issues/751)).
+Tachiai's own code still must not log, persist or send frame-derived text.
 Historical user-approved debug native experiments are documented in
 [native-access evidence](docs/src/project/native-access-experiments.md) and
 [security boundaries](docs/src/project/security-and-privacy.md). On 2026-10-10

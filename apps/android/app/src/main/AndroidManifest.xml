@@ -143,5 +143,17 @@
             android:name="com.google.mlkit.common.internal.MlKitInitProvider"
             android:authorities="${applicationId}.mlkitinitprovider"
             tools:node="remove" />
+        <!-- ML Kit queues FIREBASE_ML_SDK diagnostics through Google's
+             datatransport to its Firelog (CCT) backend (#751). Without the
+             backend registration, datatransport refuses each event before
+             storing it, so nothing is saved or uploaded. Translation and text
+             recognition don't depend on it. -->
+        <service
+            android:name="com.google.android.datatransport.runtime.backends.TransportBackendDiscovery"
+            tools:node="merge">
+            <meta-data
+                android:name="backend:com.google.android.datatransport.cct.CctBackendFactory"
+                tools:node="remove" />
+        </service>
     </application>
 </manifest>

@@ -37,7 +37,8 @@ class AbemaReadinessIpcTest {
     }
     @Test fun responseRequiresCurrentNonceSequenceClosedStatusAndOnlyLaunchMayCarryTicket() {
         fun fields(status: String) = mapOf<String, Any?>("nonce" to nonce, "sequence" to 1L, "status" to status)
-        for (status in listOf("READY", "WAIT", "FAILURE", "TEMPORARY_FAILURE", "INTERACTION_REQUIRED", "STORAGE_FAILURE")) {
+        for (status in listOf("READY", "WAIT", "FAILURE", "TEMPORARY_FAILURE", "INTERACTION_REQUIRED", "STORAGE_FAILURE",
+            "CLEANUP_UNCONFIRMED")) {
             assertEquals(status, checkNotNull(AbemaReadinessIpc.decodeResponse(fields(status), nonce, 1)).status.name)
             assertNull(AbemaReadinessIpc.decodeResponse(fields(status) + ("ticket" to nonce), nonce, 1))
         }

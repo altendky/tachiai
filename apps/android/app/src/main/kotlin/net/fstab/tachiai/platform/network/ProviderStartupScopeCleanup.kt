@@ -24,6 +24,11 @@ internal class ProviderStartupCleanupRegistry(private val worker: Executor,
     // Closed lines only (#764): a cause and counts, never an instance or route.
     private val log: (String) -> Unit = {},
     private val nowElapsedMs: () -> Long) {
+    // #783: an instance a provider's own cleanup quarantined for this process,
+    // such as an ABEMA account lease whose cleanup was not confirmed. A source
+    // that throws counts as quarantined.
+    @Volatile internal var quarantined: (String) -> Boolean = { false }
+    private fun quarantinedNow(instanceId: String) = runCatching { quarantined(instanceId) }.getOrDefault(true)
     private class Retired(val identity: Any, val resource: ProviderStartupCleanupResource,
         val uncertainty: () -> ProviderStartupUncertainty?) {
         var poisoned = false
@@ -99,7 +104,8 @@ internal class ProviderStartupCleanupRegistry(private val worker: Executor,
 
     // Memory-only gate suitable for existing request/lifecycle predicates.
     fun isReady(instanceId: String): Boolean = synchronized(lock) { retired[instanceId].isNullOrEmpty() }
-    fun isPoisoned(instanceId: String): Boolean = synchronized(lock) { retired[instanceId]?.any { it.poisoned } == true }
+    fun isPoisoned(instanceId: String): Boolean =
+        synchronized(lock) { retired[instanceId]?.any { it.poisoned } == true } || quarantinedNow(instanceId)
 
     // Worker only. A pending close does not create an unbounded wait, and
     // cancellation never abandons the strongly owned retirement or its worker.
@@ -107,6 +113,7 @@ internal class ProviderStartupCleanupRegistry(private val worker: Executor,
         require(validProviderInstanceId(instanceId))
         while (true) {
             if (!runCatching(canUse).getOrDefault(false)) return ProviderStartupCleanupAdmission.CANCELLED
+            if (quarantinedNow(instanceId)) return ProviderStartupCleanupAdmission.CLEANUP_UNCONFIRMED
             val admission = synchronized(lock) {
                 val records = retired[instanceId]
                 val remaining = absoluteDeadline - nowElapsedMs()
@@ -139,7 +146,13 @@ internal class ProviderStartupCleanupRegistry(private val worker: Executor,
 internal object ProviderStartupScopeCleanup {
     private val worker = ThreadPoolExecutor(2, 2, 0, TimeUnit.MILLISECONDS, ArrayBlockingQueue(32),
         { task -> Thread(task, "provider-startup-cleanup").apply { isDaemon = true } }, ThreadPoolExecutor.AbortPolicy())
-    private val registry = ProviderStartupCleanupRegistry(worker, ::event, SystemClock::elapsedRealtime)
+    private val quarantineSources = java.util.concurrent.CopyOnWriteArrayList<(String) -> Boolean>()
+    private val registry = ProviderStartupCleanupRegistry(worker, ::event, SystemClock::elapsedRealtime).also {
+        it.quarantined = { id -> quarantineSources.any { source -> runCatching { source(id) }.getOrDefault(true) } }
+    }
+    // A provider registers its own process-lifetime cleanup quarantine (#783),
+    // so the same gate and Restart notice cover it.
+    fun addQuarantineSource(source: (String) -> Boolean) { quarantineSources.add(source) }
     // Closed gate lines only (#764); never an instance, route or provider value.
     internal fun event(text: String) { runCatching { android.util.Log.i("TachiaiStartupCleanup", text) } }
     fun retire(instanceId: String, scope: ProviderRouteStartup) {

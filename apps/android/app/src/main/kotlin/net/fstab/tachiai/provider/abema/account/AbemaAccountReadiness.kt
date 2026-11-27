@@ -10,7 +10,8 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentLinkedQueue
 import net.fstab.tachiai.presentation.validProviderInstanceId
 
-internal enum class AbemaAccountReadinessResult { READY, HANDOFF, FAILURE, TEMPORARY_FAILURE, INTERACTION_REQUIRED, STORAGE_FAILURE }
+internal enum class AbemaAccountReadinessResult { READY, HANDOFF, FAILURE, TEMPORARY_FAILURE, INTERACTION_REQUIRED, STORAGE_FAILURE,
+    CLEANUP_UNCONFIRMED }
 
 internal data class AbemaReadinessTarget(val instanceId: String, val ownerProof: String) {
     override fun toString() = "AbemaReadinessTarget(redacted)"
@@ -76,6 +77,7 @@ internal class AbemaAccountReadiness(private val activity: ComponentActivity) : 
                         AbemaRenewalReadinessCoordinator.Status.TEMPORARY_FAILURE -> finish(AbemaAccountReadinessResult.TEMPORARY_FAILURE)
                         AbemaRenewalReadinessCoordinator.Status.INTERACTION_REQUIRED -> finish(AbemaAccountReadinessResult.INTERACTION_REQUIRED)
                         AbemaRenewalReadinessCoordinator.Status.STORAGE_FAILURE -> finish(AbemaAccountReadinessResult.STORAGE_FAILURE)
+                        AbemaRenewalReadinessCoordinator.Status.CLEANUP_UNCONFIRMED -> finish(AbemaAccountReadinessResult.CLEANUP_UNCONFIRMED)
                         AbemaRenewalReadinessCoordinator.Status.LAUNCH -> {
                             // Reservations are claimed internally by the service.
                             // A stale/invalid LAUNCH reply must never open UI.

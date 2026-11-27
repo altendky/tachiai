@@ -29,6 +29,32 @@ class ProviderStartupScopeCleanupTest {
         override val cleanupConfirmed get() = confirms
     }
 
+    // #783: a provider's own process-lifetime quarantine, such as a poisoned
+    // ABEMA account instance, closes the same gate with the Restart notice.
+    @Test fun aQuarantinedInstanceIsUnconfirmedAtOnceWithTheRestartNoticeAndOthersStayReady() {
+        val queue = Queue(); val registry = ProviderStartupCleanupRegistry(queue) { 100 }
+        val quarantined = mutableSetOf<String>()
+        registry.quarantined = { it in quarantined }
+        assertFalse(registry.isPoisoned(id))
+        assertEquals(ProviderStartupCleanupAdmission.READY, registry.awaitReady(id, 1_000) { true })
+        quarantined += id
+        assertTrue(registry.isPoisoned(id)); assertFalse(registry.isPoisoned(otherId))
+        assertEquals(ProviderStartupCleanupAdmission.CLEANUP_UNCONFIRMED, registry.awaitReady(id, 1_000) { true })
+        assertEquals(ProviderStartupCleanupAdmission.READY, registry.awaitReady(otherId, 1_000) { true })
+        val notice = checkNotNull(net.fstab.tachiai.feature.connections.providerCleanupNotice(registry.awaitReady(id, 1_000) { true }))
+        assertEquals(net.fstab.tachiai.feature.connections.PROVIDER_CLEANUP_RESTART_MESSAGE, notice.message)
+        assertEquals(net.fstab.tachiai.feature.connections.ProviderCleanupAction.RESTART, notice.action)
+        // A cancelled caller is still told it was cancelled, not blocked.
+        assertEquals(ProviderStartupCleanupAdmission.CANCELLED, registry.awaitReady(id, 1_000) { false })
+    }
+
+    @Test fun aQuarantineSourceThatThrowsFailsClosed() {
+        val registry = ProviderStartupCleanupRegistry(Queue()) { 100 }
+        registry.quarantined = { error("fixture") }
+        assertTrue(registry.isPoisoned(id))
+        assertEquals(ProviderStartupCleanupAdmission.CLEANUP_UNCONFIRMED, registry.awaitReady(id, 1_000) { true })
+    }
+
     @Test fun retirementSignalsImmediatelyButReplacementWaitsForConfirmedWorkerCleanup() {
         val queue = Queue(); val registry = ProviderStartupCleanupRegistry(queue) { 100 }
         val resource = Resource()

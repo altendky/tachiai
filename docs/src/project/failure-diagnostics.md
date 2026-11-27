@@ -1031,6 +1031,61 @@ On an older build, `dispatchMs − sendHopMs − replyHopMs` gives the same spli
 The `owner=CHECK_STATS` `receiveHop` and `replyHop` keep their names too. They
 are now waits for the service thread, not the main looper.
 
+## Viewer main-thread steps at Stop and feed start (#769) — 2026-11-27
+
+In the #758 emulator check, the viewer process's main thread skipped 33–75
+frames at every Stop and when feeds started. Each timed main-thread step now
+logs one closed line under `TachiaiViewerMain`:
+
+```text
+viewer=MAIN_STEP step=<name> ms=<n>
+```
+
+The line holds only the fixed step name and its milliseconds. Work on any other
+thread is not logged. Capture it with the `Choreographer` lines from the same
+process (`-s TachiaiViewerMain:* Choreographer:*`). A step that ends just
+before a `Skipped N frames` line is the step that held the thread.
+
+| Step | Main-thread work |
+| --- | --- |
+| `stop` | All of Stop, until the picker is shown again. |
+| `stopPicker`, `stopRefreshSetup` | Showing the picker, and queueing its setup read. |
+| `pickerOrientation`, `pickerSystemBars`, `pickerDetachViewer`, `pickerCompose` | Within `stopPicker`: releasing the viewer's landscape request, restyling the system bars, removing the viewer's views from the window, then composing the picker. |
+| `dispose` | The whole viewer teardown. It also runs when a new viewer opens. |
+| `disposeSavePositions`, `disposeMediaSession`, `disposeStartupScopes` | Queueing replay position writes, closing the TV media session, retiring startup scopes. |
+| `disposeSurfaces` | Detaching players from their surfaces, before the feeds close. |
+| `disposeFeeds` | Closing each feed: its session, the player's pause and stop, and its helper teardown. |
+| `disposeViewer`, `disposePlayback`, `disposeRoutes` | Ending the viewer's views, closing the pair controller, releasing routes. |
+| `helperDestroy` | Destroying a feed's WebView helper. |
+| `playerRelease` | `ExoPlayer.release()`. It runs after Stop returns, once the cleanup worker has closed the transport. |
+| `stopProxyClear` | Starting the WebView proxy clear. |
+| `startSetupView`, `startCreateViewer` | The preparing screen, and building the viewer and its player views. |
+| `startRouteInstall` | Installing the WebView route. |
+| `startFeedSession` | Constructing a feed session. For ABEMA, that includes `startWebView` and `startBrowserConfig`. |
+| `startFeedPrepare` | Starting a feed's preparation. |
+| `startPlayer` | Building a feed's native player. |
+| `startSlotBind` | Binding a prepared player to its slot and surface. |
+| `startPlay` | Starting playback of ready feeds. |
+
+`ExoPlayer.release()` blocks the thread that calls it, here the viewer's main
+thread. It waits until the playback thread has disabled and reset the
+renderers, released their codecs and released the media source. Two feeds meant
+two waits. Native cleanup now calls `stop()` first, right after the player's
+pause and mute. `stop()` asks the playback thread for the same reset without
+waiting for it. The reset then overlaps the cleanup worker's transport close.
+That worker then waits, for at most 1 s, until the playback thread has handled
+the stop. Only then is `release()` posted to main, and little is left for it to
+wait for.
+
+Detaching a player's surface also blocks main, until the playback thread has
+applied the change. Behind a `stop()`, that wait would include the whole reset.
+Stop therefore detaches the surfaces before it closes the feeds.
+
+`release()`, its 500 ms timeout, the #730 late-release evidence and the
+cleanup receipt's confirmation are unchanged. If the stop fails or the wait
+lapses, `release()` does the remaining work as before. Synchronous cleanup on
+the main thread, such as a construction rollback, never waits for the stop.
+
 ## Replay resume loading — 2026-11-26
 
 On the `tachiai-dev` emulator, a replay joining a playing replay pair at a

@@ -13,6 +13,7 @@ import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import android.view.View
+import android.view.ViewGroup
 import android.webkit.WebView
 import android.widget.Button
 import android.widget.FrameLayout
@@ -209,6 +210,7 @@ import net.fstab.tachiai.platform.diagnostics.FailureDiagnostics
 import net.fstab.tachiai.platform.diagnostics.FailureReporter
 import net.fstab.tachiai.platform.diagnostics.FailureStage
 import net.fstab.tachiai.platform.diagnostics.FailureSlot
+import net.fstab.tachiai.platform.diagnostics.ViewerMainSteps
 
 // Primary picker/viewer. Existing names and process/storage identities are kept
 // so updates retain configured sources, routes and provider authorization.
@@ -233,7 +235,7 @@ open class PrototypeActivity : ComponentActivity() {
             post = { cleanupHandler.post(it) },
             delay = { millis, action -> cleanupHandler.postDelayed(action, millis) },
             closeWorker = routeCloser,
-            clearProxy = { reporter, complete -> webRoute.clear(reporter, complete) },
+            clearProxy = { reporter, complete -> ViewerMainSteps.time("stopProxyClear") { webRoute.clear(reporter, complete) } },
             changed = {
                 if (cachedCleanup.failed) {
                     if (!cachedCleanup.playbackFailed) routeCleanupFailed = true
@@ -519,10 +521,14 @@ open class PrototypeActivity : ComponentActivity() {
         if (budget != null) return
         // A startup that ended without a viewer leaves nothing to stop.
         if (!startingPlayback) exitConfirmation?.let { exitConfirmation = null; it.dismiss() }
+        val previous = root
         root = null; progress = null; returnButton = null
-        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-        styleSystemBars(false)
-        setContent { TachiaiPrototypeTheme { PrototypeSourcePicker(listOfNotNull(setupMessage ?: message, pickerSelectionMessage).joinToString("\n").ifBlank { null },
+        ViewerMainSteps.time("pickerOrientation") { requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED }
+        ViewerMainSteps.time("pickerSystemBars") { styleSystemBars(false) }
+        // Timed apart from composing (#769): detaching the viewer's views,
+        // which setContent would otherwise do as it replaces them.
+        ViewerMainSteps.time("pickerDetachViewer") { (previous?.parent as? ViewGroup)?.removeView(previous) }
+        ViewerMainSteps.time<Unit>("pickerCompose") { setContent { TachiaiPrototypeTheme { PrototypeSourcePicker(listOfNotNull(setupMessage ?: message, pickerSelectionMessage).joinToString("\n").ifBlank { null },
             onConnections = { startActivity(Intent(this, ConnectionProfilesActivity::class.java)) },
             setupReady = setupReady, providerInstances = providerInstances, configuredSources = configuredSources,
             initialAssignments = pickerAssignments, onAssignmentsChanged = ::rememberPickerAssignments,
@@ -535,7 +541,7 @@ open class PrototypeActivity : ComponentActivity() {
             obsoleteSetup = obsoleteSetup, onResetStreamSettings = ::resetStreamSettings,
             playbackAvailable = playbackAvailable, recoveryMessage = recoveryMessage,
             onRecovery = if (hasRecovery) ({ showRecoveryDialog(true) }) else null,
-            startingPlayback = startingPlayback, setupLoaded = setupLoaded, onWatch = ::watch) } }
+            startingPlayback = startingPlayback, setupLoaded = setupLoaded, onWatch = ::watch) } } }
     }
 
     private fun updateRecoveryState() {
@@ -813,8 +819,8 @@ open class PrototypeActivity : ComponentActivity() {
         })
         frame.addView(setup, FrameLayout.LayoutParams(-1, -1))
         root = frame
-        setContentView(frame)
-        createViewer()
+        ViewerMainSteps.time("startSetupView") { setContentView(frame) }
+        ViewerMainSteps.time("startCreateViewer") { createViewer() }
         prepareRoutes(selected, sharedBudget, run, setup, routePlan)
         updateProgress()
         handler.post(ticker)
@@ -917,7 +923,7 @@ open class PrototypeActivity : ComponentActivity() {
                             else createFeeds(selected, sharedBudget, run, setup, setOf(PrototypeService.ABEMA))
                         }
                     }
-                    try { webRoute.install(abema, ::complete, diagnostics) }
+                    try { ViewerMainSteps.time("startRouteInstall") { webRoute.install(abema, ::complete, diagnostics) } }
                     catch (error: Throwable) {
                         diagnostics.report(FailureStage.WEB_ROUTE_INSTALL, error)
                         complete(false)
@@ -979,14 +985,14 @@ open class PrototypeActivity : ComponentActivity() {
                         androidAbemaEpisodePlaybackOwnership(this, owner.effectiveInstance, owner.profile,
                             feedActive, feedDiagnostics(index), expectedProof = owner.proof)
                     } else null
-                val session = when (source.service) {
+                val session = ViewerMainSteps.time("startFeedSession") { when (source.service) {
                     PrototypeService.YOUTUBE -> net.fstab.tachiai.provider.youtube.YouTubeFeedSession(
                         this, source.resource.identity, feedActive, events,
                         onCleanupChanged = { cleanupHandler.post { ownedRun?.let(cachedCleanup::feedCleanupChanged) } })
                     PrototypeService.ABEMA -> if (useCachedAbema) CachedPrototypeAbemaSession(this, replay, feedActive, events,
                         route = checkNotNull(routes[source.instanceId]), diagnostics = feedDiagnostics(index, attempt),
                         onHelperCreated = { helper -> cachedCleanup.helper(checkNotNull(ownedRun), helper,
-                            helper::destroy) { !helper.cleanupFailed } },
+                            { ViewerMainSteps.time("helperDestroy") { helper.destroy() } }) { !helper.cleanupFailed } },
                         onCleanupChanged = { cleanupHandler.post { ownedRun?.let(cachedCleanup::feedCleanupChanged) } },
                         episodeResource = source.resource.takeIf { replay && it.kind == "episode" },
                         channelResource = source.resource.takeIf { !replay },
@@ -1025,7 +1031,7 @@ open class PrototypeActivity : ComponentActivity() {
                             diagnostics = feedDiagnostics(index, attempt),
                             onCleanupChanged = { cleanupHandler.post { ownedRun?.let(cachedCleanup::feedCleanupChanged) } })
                     }
-                }
+                } }
                 sessions = sessions.toMutableList().also { it[index] = session }
                 ownedRun?.let { cachedCleanup.feed(it, index, session,
                     pending = { when (session) {
@@ -1059,7 +1065,7 @@ open class PrototypeActivity : ComponentActivity() {
             }
         }
         created.forEach { (index, host) ->
-            try { host.prepare(sharedBudget.child()) }
+            try { ViewerMainSteps.time("startFeedPrepare") { host.prepare(sharedBudget.child()) } }
             catch (error: Exception) {
                 feedDiagnostics(index).report(FailureStage.FEED_PREPARE, error)
                 failFeed(index, PrototypeFeedFailure(PrototypeFailureReason.PREPARATION_FAILED))
@@ -1125,7 +1131,7 @@ open class PrototypeActivity : ComponentActivity() {
             if (desiredPlaying && playBarrier == null && playback?.busy != true && !pairOffsetBlocksPlay() && available.isNotEmpty() &&
                 available.all { it.timingSnapshot()?.let { value -> value.state == Player.STATE_READY && !value.playingAd } == true } &&
                 available.any { it.timingSnapshot()?.playWhenReady != true }) {
-                playReadyFeeds()
+                ViewerMainSteps.time("startPlay") { playReadyFeeds() }
             }
             viewer?.refresh()
             saveReplayPositions(force = false)
@@ -1972,9 +1978,11 @@ open class PrototypeActivity : ComponentActivity() {
                 setPlaybackIntent(true, PlaybackHealthIntent.RETRY_REJOIN)
         }
         invalidatePlay()
-        playback?.setMember(NativeMixedSide.entries[index], member)
-        applyQuality(NativeMixedSide.entries[index])
-        surfaces[index].player = host.player
+        ViewerMainSteps.time("startSlotBind") {
+            playback?.setMember(NativeMixedSide.entries[index], member)
+            applyQuality(NativeMixedSide.entries[index])
+            surfaces[index].player = host.player
+        }
         recordPlaybackHealth(index, PlaybackHealthReason.FEED_PREPARED)
         val join = retryPlaybackJoins[index]
         retryPlaybackJoins[index] = null
@@ -2804,19 +2812,20 @@ open class PrototypeActivity : ComponentActivity() {
             }
     }
 
-    private fun stopToPicker(message: String) {
+    // Main-thread steps are timed as closed counters (#769).
+    private fun stopToPicker(message: String) { ViewerMainSteps.time<Unit>("stop") {
         exitConfirmation?.let { exitConfirmation = null; it.dismiss() }
         cancelStartingPlayback()
         setPlaybackIntent(false, PlaybackHealthIntent.STOP)
         dispose()
         val result = message + if (cleanupFailed) " Playback cleanup reported a failure." else ""
         if (resumed.get() && !isFinishing) {
-            showPicker(result)
+            ViewerMainSteps.time("stopPicker") { showPicker(result) }
             // The worker serializes accepted quality writes before this read.
             // A disposed session cannot publish its callback into a new viewer.
-            refreshSetup()
+            ViewerMainSteps.time("stopRefreshSetup") { refreshSetup() }
         } else resumeMessage = result
-    }
+    } }
 
     // Stopping while Watch still checks provider connections abandons that
     // check, as leaving the app does; dispose retires its startup scopes.
@@ -2827,27 +2836,32 @@ open class PrototypeActivity : ComponentActivity() {
         accountReadiness.cancelCheck()
     }
 
-    private fun dispose(retainStartups: Boolean = false) {
+    private fun dispose(retainStartups: Boolean = false) { ViewerMainSteps.time<Unit>("dispose") {
         // A route switch's worker registers no startup scope after this (#271).
         routeSwitch?.cancelled?.set(true); routeSwitch = null
         pendingRouteSwitches.clear(); routeTries.fill(null); exhaustedRoutes.fill(null); routeWalk.clear()
         // Leaving, the background and a new viewer all save the last positions first.
-        saveReplayPositions(force = true)
+        ViewerMainSteps.time("disposeSavePositions") { saveReplayPositions(force = true) }
         replayPositionKeys = listOf(null, null); replayPositionsLoading = false; replayResumeNoticePending = false
         cancelRetryPlaybackIntent()
         // Leaving the viewer (including the background) stops monitoring.
         waiting.forEach { it.cancel() }
         window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         if (pairMediaSession != null) mediaController = null
-        pairMediaSession?.close(); pairMediaSession = null
-        if (!retainStartups) retireStartupScopes()
+        ViewerMainSteps.time("disposeMediaSession") { pairMediaSession?.close() }; pairMediaSession = null
+        if (!retainStartups) ViewerMainSteps.time("disposeStartupScopes") { retireStartupScopes() }
         disposing = true
         feedRetries.forEach { it.invalidate() }
         cancelRoutePreparation()
         epoch.incrementAndGet(); invalidatePlay(); handler.removeCallbacks(ticker)
         budget?.stop()
-        cachedRun?.let(cachedCleanup::end)
-        if (!diagnostics.cleanupAll(FailureStage.VIEWER_END) { viewer?.endSession() }) cleanupFailed = true
+        // Detaching a surface blocks main until the playback thread applies it
+        // (#769), so detach before closing feeds stops their players: behind a
+        // stop, the detach would wait for the whole renderer reset.
+        ViewerMainSteps.time("disposeSurfaces") { surfaces.forEach { it.player = null } }
+        // Closes each feed: its session, the player's stop and helper teardown.
+        ViewerMainSteps.time("disposeFeeds") { cachedRun?.let(cachedCleanup::end) }
+        if (!diagnostics.cleanupAll(FailureStage.VIEWER_END) { ViewerMainSteps.time("disposeViewer") { viewer?.endSession() } }) cleanupFailed = true
         viewer = null
         qualitySession?.clearOverrides(); qualitySession = null; savingQuality = false; qualityMessage = null
         pairOffsetSession = null; pairOffsetIdentity = null; pairOffsetOwner = null
@@ -2857,10 +2871,10 @@ open class PrototypeActivity : ComponentActivity() {
         timingEvidenceRequest = null
         pairOffsetLoading = false; pairOffsetReadFailed = false; pairOffsetSaveId = null
         if (useCachedAbema) {
-            if (!diagnostics.cleanupAll(FailureStage.PLAYBACK_CLOSE) { playback?.close() }) cleanupFailed = true
+            if (!diagnostics.cleanupAll(FailureStage.PLAYBACK_CLOSE) { ViewerMainSteps.time("disposePlayback") { playback?.close() } }) cleanupFailed = true
         } else playback?.close()
         playback = null
-        surfaces.forEach { it.player = null }; surfaces = emptyList()
+        surfaces = emptyList()
         if (cachedRun == null) sessions.forEachIndexed { index, session ->
             if (!feedDiagnostics(index).cleanupAll(FailureStage.FEED_CLOSE) { session?.close() } || session?.cleanupFailed == true) {
                 feedDiagnostics(index).report(FailureStage.FEED_CLEANUP_UNCONFIRMED)
@@ -2868,7 +2882,7 @@ open class PrototypeActivity : ComponentActivity() {
             }
         }
         sessions = listOf(null, null)
-        releaseRoutes()
+        ViewerMainSteps.time("disposeRoutes") { releaseRoutes() }
         if (!diagnostics.cleanupAll(FailureStage.AUDIO_FOCUS_CLOSE) { focus?.close() }) cleanupFailed = true
         focus = null
         // Debug builds only (#784): a shell-armed fault reports this viewer's cleanup as unconfirmed.
@@ -2877,7 +2891,7 @@ open class PrototypeActivity : ComponentActivity() {
         disposing = false
         updateRecoveryState()
         if (cleanupFailed) Log.d("TachiaiPrototype", "cleanup=FAILED")
-    }
+    } }
 
     private fun releaseRoutes() {
         // Without routes no waiting check can run (#587).

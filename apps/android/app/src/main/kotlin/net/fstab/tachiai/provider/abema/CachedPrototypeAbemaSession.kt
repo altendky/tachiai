@@ -83,6 +83,7 @@ import org.json.JSONObject
 import org.json.JSONTokener
 import javax.net.ssl.HttpsURLConnection
 import net.fstab.tachiai.platform.diagnostics.OperationStats
+import net.fstab.tachiai.platform.diagnostics.ViewerMainSteps
 import net.fstab.tachiai.platform.diagnostics.FailureReporter
 import net.fstab.tachiai.platform.diagnostics.FailureCategory
 import net.fstab.tachiai.platform.diagnostics.FailureStage
@@ -239,7 +240,8 @@ internal class CachedPrototypeAbemaSession(
     val cleanupConfirmed get() = closed.get() && !cleanupFailed && !cleanupPending &&
         transportCleanup.confirmed && (nativeCleanup?.confirmed != false) && slotProfile.get()?.cleanupConfirmed != false
 
-    override val providerView: View = WebView(context)
+    // Main-thread feed start steps are timed as closed counters (#769).
+    override val providerView: View = ViewerMainSteps.time("startWebView") { WebView(context) }
     private val view get() = providerView as WebView
     private val helperCleanup = CachedAbemaHelperCleanup.forView(view, diagnostics)
     override val member: NativePairMember? get() = nativeHost
@@ -248,7 +250,7 @@ internal class CachedPrototypeAbemaSession(
     init {
         check(Looper.myLooper() == Looper.getMainLooper())
         onHelperCreated(helperCleanup)
-        configureBrowser()
+        ViewerMainSteps.time("startBrowserConfig") { configureBrowser() }
     }
 
     private fun allows(value: String?) = value == AbemaNativeBootstrapPolicy.PAGE
@@ -969,7 +971,7 @@ internal class CachedPrototypeAbemaSession(
                         ?.let { shape -> lastShape = shape; record(shape.closedSummary()) }
                 } })
         try {
-            val created = BoundedNativeDashPlayer(view.context, checkNotNull(budget), source.kids,
+            val created = ViewerMainSteps.time("startPlayer") { BoundedNativeDashPlayer(view.context, checkNotNull(budget), source.kids,
                 allowedUri = policy::allows, manifestUri = source.uri, manifestParser = parser,
                 exchange = { challenge -> broker(challenge, run, minOf(deadline, SystemClock.elapsedRealtime() + 30_000)) },
                 onEvent = { event, code ->
@@ -1014,7 +1016,7 @@ internal class CachedPrototypeAbemaSession(
                 liveCache = liveCache,
                 onCleanupOwner = { nativeCleanup = it },
                 onCleanupChanged = ::nativeCleanupChanged,
-                onCleanupUnconfirmed = { cleanupFailed = true; onCleanupChanged() })
+                onCleanupUnconfirmed = { cleanupFailed = true; onCleanupChanged() }) }
             nativeHost = created
             nativePreparationEvidence.observe(AbemaNativePreparationPhase.HOST_CREATED, true)
             created.start(source.uri, playWhenReady = false)
@@ -1347,7 +1349,7 @@ internal class CachedPrototypeAbemaSession(
             return
         }
         try {
-            if (!helperCleanup.destroy() || helperCleanup.cleanupFailed) cleanupFailed = true
+            if (!ViewerMainSteps.time("helperDestroy") { helperCleanup.destroy() } || helperCleanup.cleanupFailed) cleanupFailed = true
         } finally { helperFinalized.set(true); onCleanupChanged() }
     }
 

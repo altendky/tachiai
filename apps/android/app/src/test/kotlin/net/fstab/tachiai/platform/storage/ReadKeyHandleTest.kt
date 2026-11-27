@@ -29,6 +29,21 @@ class ReadKeyHandleTest {
         assertEquals(1, loads); assertEquals(3, reads); assertEquals(3, decrypts)
     }
 
+    @Test fun aSealedReadLoadsNoKeyAndOpensExactlyTheEnvelopeItRead() {
+        var loads = 0
+        var envelope = encryptPrivateSecret(key, binding, byteArrayOf(1))
+        val handle = ReadKeyHandle { loads++; key }
+        val sealed = handle.seal { envelope }
+        assertEquals(0, loads)
+        envelope = encryptPrivateSecret(key, binding, byteArrayOf(2))
+        assertArrayEquals(byteArrayOf(1), sealed.open { selected, bytes -> decryptPrivateSecret(selected, binding, bytes) })
+        assertEquals(1, loads)
+        assertEquals("ReadKeyHandle.Sealed(redacted)", sealed.toString())
+        // A sealed absent record opens to null without a key.
+        assertNull(handle.seal { null }.open { _, _ -> error("No decrypt for an absent file") })
+        assertEquals(1, loads)
+    }
+
     @Test fun fileKeyAndDecryptFailuresPropagateTheOriginalAndDoNotRetry() {
         for (stage in listOf("file", "key", "decrypt")) {
             var loads = 0; var reads = 0; var decrypts = 0

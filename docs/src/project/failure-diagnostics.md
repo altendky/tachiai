@@ -940,6 +940,38 @@ changed here. Making interrupted callers wait for the lock would hold cancelled
 loaders, and release, behind that queue. Writing asynchronously could lose a
 record when a recovery restart ends the process.
 
+### Store reads outside the store locks (#771) — 2026-11-27
+
+In the #752 emulator check, opening Providers during two-feed playback pushed
+one media admission to 10.4 s. The Providers screen's load held the
+connection-profile store's locks for 5.7 s during one full read, and a durable
+check's revision read waited 5.6 s behind it
+([#771](https://github.com/altendky/tachiai/issues/771)).
+
+A revision read takes the same process lock and cross-process file lock as a
+full read. An unlocked read of the record isn't safe, because `AtomicFile` can
+restore a backup or delete a writer's new file. A full read held both locks
+for the keystore key lookup, the decryption, the parse of every record and,
+for the Routes, Providers, provider details and source settings screens, the
+WireGuard public-key derivation of every saved route.
+
+Now a read of either store holds the locks only while it reads the encrypted
+record. It decrypts and decodes after releasing them, so revision reads,
+other readers and writes no longer wait behind that work. The read still
+returns exactly the record it read, with that record's revision, so a verdict
+kept from it names the old record. A write committed meanwhile changes the
+revision, and the next check reads fully. Writes still read, decode and write
+under the locks. A missing registry's legacy view is still built under them.
+
+Providers needs one read of each of the two stores, which it already made.
+Only the Routes screen shows public keys, so the other screens no longer
+derive them.
+
+`store=PROVIDER_INSTANCES` and `store=CONNECTION_PROFILES` add two timings
+after a read's locks are released: `decrypt` (the key lookup and decryption)
+and `decode` (parsing and the caller's selection). `readHold` now covers only
+the record read.
+
 ### Lease checks off the viewer's main looper (#770) — 2026-11-27
 
 In the #756 emulator check, with two ABEMA feeds playing, the viewer's lease

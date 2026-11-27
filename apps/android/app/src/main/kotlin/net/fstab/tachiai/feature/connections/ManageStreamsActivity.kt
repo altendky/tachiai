@@ -210,7 +210,7 @@ class ManageStreamsActivity : ComponentActivity() {
                 if (providerDetails) {
                     val loaded = withContext(Dispatchers.IO) {
                         providerInstanceStore(applicationContext).read { legacyProviderSettings(applicationContext) } to
-                            connectionProfileStore(applicationContext).summaries()
+                            connectionProfileStore(applicationContext).summaries(publicKeys = false)
                     }
                     if (!resumed || revision != current) return@launch
                     val owner = loaded.first.singleOrNull { it.id == id }

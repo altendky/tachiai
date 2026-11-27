@@ -1310,6 +1310,35 @@ The next lease session end in the main process is then reported as
 `DEBUG_FAULT` and poisons its instance. The real cleanup still runs. `clear`
 disarms it.
 
+On the emulator after this change, 1 of 16 early Stops still ended in "Playback
+recovery required". Every lease end for that Stop confirmed, but the viewer
+journaled `FEED_CLEANUP_UNCONFIRMED` 0.4 s after the Stop with no earlier
+cause. Several parts of a cached ABEMA feed's cleanup had set its failure flag
+without recording anything. Each now names itself once:
+
+- Logcat: `cachedCleanup=UNCONFIRMED part=…` under `TachiaiCachedAbema`.
+- Journal: stage `CACHED_ABEMA_CLEANUP`, category `CACHED_CLEANUP_<part>`.
+
+The parts are the session's native transport receipt; the bundle and source
+request disconnects and closes; the configured slot's subscription-profile read
+(`SLOT_PROFILE_READ`, `SLOT_PROFILE_FINAL`, `SLOT_PROFILE_CANCEL_REJECTED`);
+the native player receipt and its dispatch; the transport cancellation and final
+close; the helper's dispatch and destroy; the account lease client; and any
+`finish` stage.
+
+The viewer's cleanup coordinator also keeps the run's first cause. It journals
+that cause as the category of the poison record, such as
+`FEED_CLEANUP_UNCONFIRMED` with `VIEWER_CLEANUP_FEED_KNOWN_FAILED`, and logs it
+as `viewerCleanup=UNCONFIRMED cause=…` under `TachiaiPrototype`. The causes are
+`CANCEL_PREPARATION`, `PREPARATION_UNCONFIRMED`, `FEED_CLOSE`,
+`FEED_KNOWN_FAILED`, `FEED_UNCONFIRMED`, `HELPER_DESTROY`, `HELPER_UNCONFIRMED`,
+`ROUTE_RETIRE`, `ROUTE_CLOSE`, `PROXY_CLEAR` and `TIMEOUT`.
+
+An account HTTP connection whose close isn't confirmed logs
+`accountHttp=CLEANUP_UNCONFIRMED stream=… disconnect=…`. Each half is `OK`,
+`NONE` (no body stream), `THREW`, `TIMEOUT`, `REJECTED` (its cleanup thread
+refused the task) or `REENTRANT`.
+
 ## Collecting one device's evidence
 
 Verify the requested device before collecting. For the persistent emulator,

@@ -59,6 +59,51 @@ class CachedViewerCleanupCoordinatorTest {
         }
     }
 
+
+    // #783: the first step that left a run unconfirmed is named once.
+    private class CauseFixture {
+        val causes = mutableListOf<ViewerCleanupCause>()
+        val worker = Queue(); val main = Queue()
+        val owner = CachedViewerCleanupCoordinator(post = { main.execute(it) }, delay = { _, _ -> },
+            closeWorker = worker, clearProxy = { _, complete -> complete() }, changed = {}, unconfirmed = { causes += it })
+        fun finish() { worker.drain(); main.drain() }
+    }
+
+    @Test fun aRefusedPreparationCancelIsTheRunsFirstCause() {
+        val f = CauseFixture(); val run = checkNotNull(f.owner.begin(FailureReporter.NONE))
+        f.owner.preparation(run) { false }
+        f.owner.helper(run, Any(), { false })
+        f.owner.end(run); f.finish()
+        assertTrue(f.owner.failed)
+        assertEquals(listOf(ViewerCleanupCause.CANCEL_PREPARATION), f.causes)
+        assertEquals(ViewerCleanupCause.CANCEL_PREPARATION, run.firstCause)
+    }
+
+    @Test fun eachFeedAndHelperFailureNamesItsOwnFirstCause() {
+        val cases = listOf<Pair<ViewerCleanupCause, (CauseFixture, CachedViewerCleanupCoordinator.Run) -> Unit>>(
+            ViewerCleanupCause.FEED_KNOWN_FAILED to { f, run -> f.owner.feed(run, 0, AutoCloseable {}, knownFailed = { true }) { true } },
+            ViewerCleanupCause.FEED_UNCONFIRMED to { f, run -> f.owner.feed(run, 0, AutoCloseable {}) { false } },
+            ViewerCleanupCause.FEED_CLOSE to { f, run -> f.owner.feed(run, 0, AutoCloseable { throw IOException("fixture") }) { true } },
+            ViewerCleanupCause.HELPER_DESTROY to { f, run -> f.owner.helper(run, Any(), { false }) },
+            ViewerCleanupCause.HELPER_UNCONFIRMED to { f, run -> f.owner.helper(run, Any(), { true }) { false } },
+        )
+        for ((expected, setup) in cases) {
+            val f = CauseFixture(); val run = checkNotNull(f.owner.begin(FailureReporter.NONE))
+            setup(f, run)
+            f.owner.end(run); f.finish()
+            assertTrue("$expected", f.owner.failed)
+            assertEquals("$expected", listOf(expected), f.causes)
+        }
+    }
+
+    @Test fun aConfirmedRunReportsNoCause() {
+        val f = CauseFixture(); val run = checkNotNull(f.owner.begin(FailureReporter.NONE))
+        f.owner.feed(run, 0, AutoCloseable {}) { true }
+        f.owner.helper(run, Any(), { true })
+        f.owner.end(run); f.finish()
+        assertFalse(f.owner.failed); assertFalse(f.owner.unavailable)
+        assertTrue(f.causes.isEmpty()); assertNull(run.firstCause)
+    }
     @Test fun destructionRefusalExceptionAndErrorRetainContextAndNeverClearOrClose() {
         for (failure in listOf(null, IOException("fixture"), AssertionError("fixture"))) {
             val f = Fixture(); val run = f.begin(); f.route(run)

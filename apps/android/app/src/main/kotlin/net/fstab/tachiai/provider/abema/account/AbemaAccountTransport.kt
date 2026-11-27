@@ -41,26 +41,30 @@ internal class AbemaAccountCleanupReceipt<T : Any>(val resource: T, private val 
     @Volatile private var owner: Thread? = null
     @Volatile private var failed = false
     @Volatile private var successful = false
+    // Why this receipt is unconfirmed (#783), as a closed name for diagnostics.
+    @Volatile var failureReason: String? = null
+        private set
+    private fun fail(reason: String) { if (failureReason == null) failureReason = reason; failed = true }
     val confirmed get() = finished.count == 0L && successful && !failed
     fun start() {
         val first = synchronized(lock) { if (started) false else { started = true; true } }
         if (first) {
             try { workers.execute {
                 owner = Thread.currentThread()
-                try { cleanup(resource); successful = true } catch (_: Throwable) { failed = true }
+                try { cleanup(resource); successful = true } catch (_: Throwable) { fail("THREW") }
                 finally { finished.countDown() }
-            } } catch (_: Throwable) { failed = true; finished.countDown() }
+            } } catch (_: Throwable) { fail("REJECTED"); finished.countDown() }
         }
     }
     fun await(): Boolean {
         start()
         if (finished.count != 0L) {
-            if (owner === Thread.currentThread()) { failed = true; return false }
+            if (owner === Thread.currentThread()) { fail("REENTRANT"); return false }
             val end = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(waitMs)
             var interrupted = false
             try {
                 while (finished.count != 0L) {
-                    val left = end - System.nanoTime(); if (left <= 0) { failed = true; return false }
+                    val left = end - System.nanoTime(); if (left <= 0) { fail("TIMEOUT"); return false }
                     try { finished.await(left, TimeUnit.NANOSECONDS) } catch (_: InterruptedException) { interrupted = true }
                 }
             } finally { if (interrupted) Thread.currentThread().interrupt() }
@@ -69,6 +73,10 @@ internal class AbemaAccountCleanupReceipt<T : Any>(val resource: T, private val 
     }
     override fun toString() = "AbemaAccountCleanupReceipt(redacted)"
 }
+
+// Which half of an account HTTP connection's cleanup was unconfirmed (#783).
+internal fun accountHttpCleanupLine(stream: String, disconnect: String) =
+    "accountHttp=CLEANUP_UNCONFIRMED stream=$stream disconnect=$disconnect"
 
 // The supplied opener MUST be an owned credential-free route: no ambient
 // Authenticator, proxy credentials or cookie jar. Java's default opener is not
@@ -100,6 +108,11 @@ internal class AbemaAccountHttpTransport(
             stream?.start(); disconnect.start()
             val streamClosed = stream?.await() != false
             val disconnected = disconnect.await()
+            if (!streamClosed || !disconnected) runCatching {
+                android.util.Log.d("TachiaiAbemaAccount", accountHttpCleanupLine(
+                    stream?.let { if (streamClosed) "OK" else it.failureReason ?: "UNCONFIRMED" } ?: "NONE",
+                    if (disconnected) "OK" else disconnect.failureReason ?: "UNCONFIRMED"))
+            }
             return streamClosed && disconnected
         }
     }

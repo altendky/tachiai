@@ -219,10 +219,14 @@ class AbemaAccountAccessService : Service() {
         // account mutation executor remains separately serialized.
         private val workers = ThreadPoolExecutor(4, 4, 0L, TimeUnit.MILLISECONDS,
             ArrayBlockingQueue<Runnable>(32), { task -> Thread(task, "abema-account-access").apply { isDaemon = true } })
+        // #770: sessions, their messages and replies run on this one thread
+        // instead of the main process's main looper, which settings screens
+        // also use. Its single thread keeps the former main-owned ordering.
+        private val looper: Looper by lazy { HandlerThread("abema-account-service").apply { start() }.looper }
     }
-    private val main = Handler(Looper.getMainLooper())
-    private val sessions = mutableMapOf<String, Session>() // Main-owned.
-    private val messenger = Messenger(object : Handler(Looper.getMainLooper()) {
+    private val lane = Handler(looper)
+    private val sessions = mutableMapOf<String, Session>() // Lane-owned.
+    private val messenger = Messenger(object : Handler(looper) {
         override fun handleMessage(message: Message) {
             if (message.sendingUid != Process.myUid()) return
             val reply = message.replyTo ?: return
@@ -246,7 +250,7 @@ class AbemaAccountAccessService : Service() {
             when (message.what) {
                 AbemaAccountAccessIpc.ACQUIRE -> session.acquire(sequence)
                 AbemaAccountAccessIpc.CHECK -> {
-                    // How long the check waited for this main looper (#752).
+                    // How long the check waited for this lane (#752, #770).
                     runCatching { AbemaAccountCheckStats.owner.time("receiveHop",
                         SystemClock.uptimeMillis() - message.`when`, SystemClock.elapsedRealtime()) }
                     session.check(sequence)
@@ -264,8 +268,8 @@ class AbemaAccountAccessService : Service() {
         @Volatile private var attachment: AbemaAccountAccessOwner.Attachment? = null
         @Volatile private var lease: AbemaAccountAccessLease? = null
         private var acquireStarted = false
-        private var announcedExpiry: Long? = null // Main-owned.
-        private val death = IBinder.DeathRecipient { main.post { end(sequence) } }
+        private var announcedExpiry: Long? = null // Lane-owned.
+        private val death = IBinder.DeathRecipient { lane.post { end(sequence) } }
         private fun current(): Boolean {
             val now = SystemClock.elapsedRealtime()
             return !ended.get() && AbemaAccountAccessIpc.sessionCurrent(request, began, now, lease != null) && lease?.current() != false
@@ -295,14 +299,14 @@ class AbemaAccountAccessService : Service() {
                 announcedExpiry = expiry
                 send(AbemaAccountAccessIpc.RENEWED, sequence, mapOf("expiry" to expiry))
             }
-            main.postAtTime({ pulse() }, this, SystemClock.uptimeMillis() + 100)
+            lane.postAtTime({ pulse() }, this, SystemClock.uptimeMillis() + 100)
         }
         private fun worker(action: () -> Unit) {
             jobs.incrementAndGet()
             try { workers.execute {
-                try { action() } catch (_: Throwable) { main.post { end(sequence) } }
+                try { action() } catch (_: Throwable) { lane.post { end(sequence) } }
                 finally { jobs.decrementAndGet() }
-            } } catch (_: Throwable) { jobs.decrementAndGet(); busy.set(false); main.post { end(sequence) } }
+            } } catch (_: Throwable) { jobs.decrementAndGet(); busy.set(false); lane.post { end(sequence) } }
         }
         fun acquire(seq: Long) {
             if (acquireStarted || !current() || !busy.compareAndSet(false, true)) { end(seq); return }
@@ -343,7 +347,7 @@ class AbemaAccountAccessService : Service() {
                     AbemaAccountAccessIpc.Status.FAILURE, failure = AbemaAccountFailure.TEMPORARY) }
                 val observed = result
                 observed.failure?.let { android.util.Log.d("TachiaiAbemaAccount", "owner=ACQUIRE_FAILED stage=$stage category=${it.name}") }
-                main.post {
+                lane.post {
                     busy.set(false)
                     if (ended.get()) return@post
                     val values = mutableMapOf<String, Any>("status" to observed.status.name)
@@ -380,7 +384,7 @@ class AbemaAccountAccessService : Service() {
                     SystemClock.elapsedRealtime(), refusal == "ADMITTED")
                 logAbemaCheckStats(AbemaAccountCheckStats.owner)
                 val checked = SystemClock.elapsedRealtime()
-                main.post {
+                lane.post {
                     runCatching { SystemClock.elapsedRealtime().let { AbemaAccountCheckStats.owner.time("replyHop", it - checked, it) } }
                     busy.set(false)
                     if (ended.get()) return@post
@@ -395,12 +399,12 @@ class AbemaAccountAccessService : Service() {
         private fun send(what: Int, seq: Long, extra: Map<String, Any> = emptyMap()) {
             val data = AbemaAccountAccessIpc.bundle(AbemaAccountAccessIpc.base(request, seq) + extra)
             try { reply.send(Message.obtain().apply { this.what = what; this.data = data }) }
-            catch (_: Throwable) { main.post { end(sequence) } }
+            catch (_: Throwable) { lane.post { end(sequence) } }
             finally { data.clear() }
         }
         fun end(seq: Long) {
             if (!ended.compareAndSet(false, true)) return
-            main.removeCallbacksAndMessages(this)
+            lane.removeCallbacksAndMessages(this)
             attachment?.close(); lease = null
             try { AbemaAccountWorkers.cancellation.execute {
                 val began = SystemClock.elapsedRealtime()
@@ -413,7 +417,7 @@ class AbemaAccountAccessService : Service() {
                 }
                 val receipt = confirmed
                 if (!receipt) AndroidAbemaAccountAccessOwners.poison(request)
-                main.post {
+                lane.post {
                     send(AbemaAccountAccessIpc.CLOSED, seq, mapOf("confirmed" to receipt))
                     if (receipt) {
                         runCatching { reply.binder.unlinkToDeath(death, 0) }
@@ -429,5 +433,6 @@ class AbemaAccountAccessService : Service() {
     }
     override fun onBind(intent: Intent): IBinder? = if (Build.VERSION.SDK_INT >= 28 &&
         Application.getProcessName() == packageName) messenger.binder else null
-    override fun onDestroy() { sessions.values.toList().forEach { it.end(it.sequence) }; super.onDestroy() }
+    // Sessions are lane-owned, so they end there.
+    override fun onDestroy() { lane.post { sessions.values.toList().forEach { it.end(it.sequence) } }; super.onDestroy() }
 }

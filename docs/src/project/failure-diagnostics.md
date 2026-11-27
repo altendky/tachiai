@@ -918,10 +918,12 @@ Media admission splits into closed timings. The fields add to the lines above:
 - `client=CHECK_STATS`: `lockWait` (waiting behind this feed's other lease
   check), `sendHop` (the viewer's main looper before sending `CHECK`),
   `dispatch` (sending until the reply wakes the worker), and `replyHop` (the
-  reply waiting for the viewer's main looper).
+  reply waiting for the viewer's main looper). #770 moved both hops off that
+  looper (below).
 - `owner=CHECK_STATS`: `receiveHop` (`CHECK` waiting for the main process's
   main looper, which the settings screens also use), and `replyHop` (the
-  finished check waiting for it again before replying).
+  finished check waiting for it again before replying). #770 moved both to a
+  service thread.
 
 Binder transit is the part of `dispatch` that the service's `receiveHop`,
 `queued`, `check` and `replyHop` don't cover.
@@ -969,6 +971,65 @@ derive them.
 after a read's locks are released: `decrypt` (the key lookup and decryption)
 and `decode` (parsing and the caller's selection). `readHold` now covers only
 the record read.
+
+### Lease checks off the viewer's main looper (#770) — 2026-11-27
+
+In the #756 emulator check, with two ABEMA feeds playing, the viewer's lease
+check was 85–95% of media admission time. Its two hops onto the viewer's main
+looper, `sendHop` and `replyHop`, were the largest part, at 70–167 ms per check.
+The check never needed that looper. Sending a `Messenger` message is a one-way
+binder call that any thread can make, and the reply only wakes the waiting worker.
+
+The viewer's lease client now:
+
+- Sends `ACQUIRE` and `CHECK` from the media request's worker. The live check
+  and the send happen together under one send lock. Revocation before unbinding
+  and the final `CLOSE` take the same lock. So the service never receives an
+  operation after the `CLOSE` that ended its lease.
+- Receives replies on one process-wide reply thread
+  (`abema-account-reply`), not the main looper. A reply applies only to the
+  exact pending sequence and kind while the lease is live. A reply that arrives
+  after the feed stopped, or after its caller gave up, changes nothing. A
+  `CLOSED` notice revokes at once, as before. Unbinding, binder-death handling
+  and the connection object stay on main.
+
+The lease service in the main process (`AbemaAccountAccessService`) also
+handled every message on its main looper. It received `CHECK` there
+(`receiveHop`) and posted each finished check back there before replying
+(`replyHop`), along with every session's 100 ms validity pulse. Settings
+screens compose on that looper. In the #771 emulator run, `receiveHop` reached
+2.6 s while provider details opened. The service now runs its messages, sessions,
+pulses and replies on one dedicated thread (`abema-account-service`). That
+thread owns the session state the main looper owned, in the same order. Only
+the thread changed.
+
+The lease, binding and release rules are unchanged: sequence checks,
+coalescing, revocation on an unconfirmed check, `CLOSE` and cleanup
+confirmation.
+
+Each feed has its own lease client and its own check lock, so `lockWait` is a
+wait behind the same feed's other media request, never behind the other feed.
+In that #771 window, `lockWaitMaxMs=5472` matched `dispatchMaxMs=5461`: a
+request waited for its own feed's slow check. The two feeds do share parts of
+the main process:
+
+- Before this change, its main looper: both feeds' `CHECK` and reply hops.
+- The service's four check workers (`queued`).
+- The grant store's disk monitor and the store locks, inside the durable check
+  (`check`).
+
+The `client=CHECK_STATS` fields keep their names. Their meanings change:
+
+- `sendHop` is the time until the `CHECK` has left the worker. It is no longer a
+  looper wait.
+- `replyHop` is the reply's wait for the reply thread.
+- `remote=… remoteMs=… remoteMaxMs=…` is new. It is `dispatch` less both hops:
+  binder transit plus the owner's `receiveHop`, `queued`, `check` and
+  `replyHop`.
+
+On an older build, `dispatchMs − sendHopMs − replyHopMs` gives the same split.
+The `owner=CHECK_STATS` `receiveHop` and `replyHop` keep their names too. They
+are now waits for the service thread, not the main looper.
 
 ## Replay resume loading — 2026-11-26
 

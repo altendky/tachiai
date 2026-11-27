@@ -271,6 +271,18 @@ What is retained:
   adaptive selection is not pushed toward an unrecorded rendition. Playlists of
   any other shape are left unchanged.
 
+## Failure journal writer — #757
+
+Failure reports now reach the failure journal through one writer per process
+([#757](https://github.com/altendky/tachiai/issues/757)). The reporting thread
+still reduces each error to its closed record before handing it off. The
+writer's memory-only queue (at most 256 records) therefore holds no exception,
+message, stack, URL or token, only the same fixed values the journal stores.
+The journal's contents, format, app-private no-backup storage (unencrypted, as
+before), capacity and seven-day retention are unchanged. Its added counters
+carry fixed names, counts and milliseconds only; see
+[failure diagnostics](failure-diagnostics.md#failure-journal-writer-757--2026-11-26).
+
 ## Route refusal logging — 2026-11-24
 
 The user required that every route refusal be clearly visible to anyone

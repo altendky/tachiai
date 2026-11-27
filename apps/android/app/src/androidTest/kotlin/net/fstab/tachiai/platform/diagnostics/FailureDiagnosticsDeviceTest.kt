@@ -55,6 +55,7 @@ class FailureDiagnosticsDeviceTest {
                 field("sessions").set(activity, listOf(feed, null))
                 type.getDeclaredMethod("dispose").apply { isAccessible = true }.invoke(activity)
                 assertEquals(true, field("cleanupFailed").get(activity))
+                assertTrue(FailureDiagnostics.flush(5_000))
                 val first = FailureJournal(file).read().first()
                 assertEquals(FailureStage.FEED_CLOSE, first.stage)
                 assertEquals(FailureSlot.A, first.slot)
@@ -69,6 +70,7 @@ class FailureDiagnosticsDeviceTest {
                 sharedFailed.set(null, true) // Async cleanup fails after replacement initialized.
                 val restored = field("diagnostics").get(replacement) as FailureReporter
                 restored.blocked(FailureStage.ROUTE_BLOCKED)
+                assertTrue(FailureDiagnostics.flush(5_000))
                 val blocked = FailureJournal(file).read().last()
                 assertEquals(FailureRelation.BLOCKED, blocked.relation)
                 assertEquals(first.recordId, blocked.rootId)
@@ -92,6 +94,7 @@ class FailureDiagnosticsDeviceTest {
             assertFalse(reporter.cleanup(FailureStage.NATIVE_HOST_CLOSE) { throw IOException("synthetic-secret") })
             repeat(20) { reporter.blocked(FailureStage.VIEWER_BLOCKED) }
         }
+        assertTrue(FailureDiagnostics.flush(5_000))
         val rows = FailureJournal(file).read()
         assertEquals(3, rows.size)
         assertEquals(FailureCategory.NETWORK_ON_MAIN_THREAD, rows.first().failure.category)
@@ -102,6 +105,7 @@ class FailureDiagnosticsDeviceTest {
         assertEquals(rows.first().recordId, rows.last().rootId)
         assertFalse(file.readText().contains("synthetic-secret"))
         FailureDiagnostics.create(context).report(FailureStage.PROVIDER_SETUP_READ, IllegalStateException("synthetic-secret"))
+        assertTrue(FailureDiagnostics.flush(5_000))
         val reopened = FailureJournal(file).read()
         assertEquals(rows, reopened.take(3))
         assertEquals(FailureRelation.FIRST, reopened.last().relation)

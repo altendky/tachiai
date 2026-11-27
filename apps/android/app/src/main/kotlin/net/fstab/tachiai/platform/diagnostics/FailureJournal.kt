@@ -427,12 +427,26 @@ internal object FailureJournalCodec {
 
 // The static lock serializes threads/instances; a stable sidecar file lock also
 // coordinates the debug prototype's separate processes across atomic renames.
-// Only fixed validated records reach disk. Small failure writes are synchronous
-// so teardown/process death cannot leave evidence waiting in an executor queue.
+// Only fixed validated records reach disk. Reporters reach it through
+// FailureJournalWriter (#757); recordAll applies a batch in order with one
+// read, replace and sync, exactly as the same sequence of single records would.
 internal class FailureJournal(private val file: File) {
     companion object { private val lock = Any() }
-    fun record(value: FailureObservation) = locked {
-        var records = readUnlocked()
+    fun record(value: FailureObservation) = recordAll(listOf(value))
+    fun recordAll(values: List<FailureObservation>) = locked {
+        val records = values.fold(readUnlocked(), ::apply)
+        val bytes = FailureJournalCodec.encode(records)
+        val parent = checkNotNull(file.parentFile)
+        val temporary = File.createTempFile(".failure-diagnostics-", ".tmp", parent)
+        try {
+            FileOutputStream(temporary).use { output -> output.write(bytes); output.fd.sync() }
+            checkSafe(file)
+            Files.move(temporary.toPath(), file.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+        } finally { check(!temporary.exists() || temporary.delete()) }
+    }
+
+    private fun apply(existing: List<FailureRecord>, value: FailureObservation): List<FailureRecord> {
+        var records = existing
         val cutoff = (value.timestampMs - FailureJournalCodec.RETENTION_MS).coerceAtLeast(0)
         val expired = records.filter { it.relation == FailureRelation.FIRST && it.timestampMs < cutoff }
             .map { it.sessionId }.toSet()
@@ -460,14 +474,7 @@ internal class FailureJournal(private val file: File) {
                 records.filterIndexed { index, _ -> index != secondary }
             }
         }
-        val bytes = FailureJournalCodec.encode(records)
-        val parent = checkNotNull(file.parentFile)
-        val temporary = File.createTempFile(".failure-diagnostics-", ".tmp", parent)
-        try {
-            FileOutputStream(temporary).use { output -> output.write(bytes); output.fd.sync() }
-            checkSafe(file)
-            Files.move(temporary.toPath(), file.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
-        } finally { check(!temporary.exists() || temporary.delete()) }
+        return records
     }
 
     fun read(): List<FailureRecord> = locked { readUnlocked() }

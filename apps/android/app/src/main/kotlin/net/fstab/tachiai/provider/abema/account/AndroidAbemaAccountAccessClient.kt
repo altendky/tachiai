@@ -14,10 +14,17 @@ import net.fstab.tachiai.platform.network.ProviderRouteOwnerReads
 
 // Worker acquisition/checks; main admission is RAM/clock only. The ordinary
 // process owns the durable record. This client retains only its private lease.
+// Its exchanges never wait for the viewer's main looper (#770): a worker sends
+// directly and replies arrive on a dedicated reply thread. Binding, unbinding
+// and the connection object stay main-owned.
 internal class AndroidAbemaAccountAccessClient(context: Context, instanceId: String, ownerProof: String,
     sourceProof: String, deadlineElapsedMs: Long, playback: Boolean, continuousPlayback: Boolean = false,
     private val canUse: () -> Boolean) : AutoCloseable {
-    companion object { private val retained = ConcurrentLinkedQueue<Any>() }
+    companion object {
+        private val retained = ConcurrentLinkedQueue<Any>()
+        // One process-wide thread receives every client's replies.
+        private val replies: Looper by lazy { HandlerThread("abema-account-reply").apply { start() }.looper }
+    }
     private val application = context.applicationContext
     private val main = Handler(Looper.getMainLooper())
     private val request = AbemaAccountAccessIpc.Request(UUID.randomUUID().toString().replace("-", ""),
@@ -31,11 +38,9 @@ internal class AndroidAbemaAccountAccessClient(context: Context, instanceId: Str
     private val retainedOnce = AtomicBoolean()
     private val ready = CountDownLatch(1)
     private val cleanup = CountDownLatch(1)
-    private val lock = Any()
     private val checks = ReentrantLock()
     private val checkHistory = AbemaAccountCheckHistory()
-    private var sequence = 1L
-    private var operation: Operation? = null
+    private val exchange = AbemaAccountExchange()
     @Volatile private var credential: AbemaAccountGrant? = null
     // A later expiry the service announced for this lease after a same-account renewal.
     @Volatile private var renewedExpiry = 0L
@@ -45,10 +50,6 @@ internal class AndroidAbemaAccountAccessClient(context: Context, instanceId: Str
     private val lossCause = java.util.concurrent.atomic.AtomicReference<String?>()
     @Volatile private var acquiredAtMs = -1L
     private var connection: Connection? = null // Main-owned.
-    private class Operation(val sequence: Long, val expected: Int) {
-        val done = CountDownLatch(1)
-        @Volatile var fields: Map<String, Any>? = null
-    }
     private fun live(): Boolean {
         val now = SystemClock.elapsedRealtime()
         return !closed.get() && !revoked.get() && !poisoned.get() &&
@@ -74,7 +75,7 @@ internal class AndroidAbemaAccountAccessClient(context: Context, instanceId: Str
         if (!okay && acquired.get()) { lose(liveCause(wall != null)); revoked.set(true); close() }
         return okay
     }
-    private val reply = Messenger(object : Handler(Looper.getMainLooper()) {
+    private val reply: Messenger = Messenger(object : Handler(replies) {
         override fun handleMessage(message: Message) {
             if (message.sendingUid != Process.myUid()) return
             val fields = AbemaAccountAccessIpc.fields(message.data) ?: return
@@ -97,17 +98,17 @@ internal class AndroidAbemaAccountAccessClient(context: Context, instanceId: Str
                     val confirmed = fields["confirmed"] == true
                     if (!closed.get()) lose("SERVICE_CLOSED")
                     if (!confirmed) poisoned.set(true)
-                    finishConnection(confirmed)
+                    // Revoked at once, before any later reply, as on the main
+                    // looper before; unbinding stays main-owned.
+                    outbound.exclusive { revoked.set(true) }; exchange.wake()
+                    main.post { finishConnection(confirmed) }
                 }
-                else -> synchronized(lock) {
-                    val pending = operation
-                    if (pending != null && seq == pending.sequence && message.what == pending.expected && live()) {
-                        // How long the reply waited for this main looper (#752).
-                        if (message.what == AbemaAccountAccessIpc.CHECKED) runCatching {
-                            AbemaAccountCheckStats.client.time("replyHop", SystemClock.uptimeMillis() - message.`when`,
-                                SystemClock.elapsedRealtime())
-                        }
-                        pending.fields = fields; pending.done.countDown()
+                else -> {
+                    // How long the reply waited for this reply thread (#752, #770).
+                    val hop = (SystemClock.uptimeMillis() - message.`when`).coerceAtLeast(0L)
+                    if (exchange.deliver(seq, message.what, fields, ::live, hop) != null &&
+                        message.what == AbemaAccountAccessIpc.CHECKED) runCatching {
+                        AbemaAccountCheckStats.client.time("replyHop", hop, SystemClock.elapsedRealtime())
                     }
                 }
             }
@@ -121,7 +122,8 @@ internal class AndroidAbemaAccountAccessClient(context: Context, instanceId: Str
         override fun onServiceConnected(name: ComponentName, service: IBinder) {
             if (connection !== this || closed.get()) { finishConnection(remote == null); return }
             try {
-                service.linkToDeath(death, 0); binder = service; remote = Messenger(service)
+                service.linkToDeath(death, 0); binder = service
+                remote = Messenger(service).also(outbound::open)
                 send(AbemaAccountAccessIpc.OPEN, 1)
             } catch (_: Throwable) { poisoned.set(true); finishConnection(false) }
         }
@@ -132,12 +134,12 @@ internal class AndroidAbemaAccountAccessClient(context: Context, instanceId: Str
             if (connection === this) { lose("BINDING_DIED"); poisoned.set(true); revoked.set(true); finishConnection(false) }
         }
         override fun onNullBinding(name: ComponentName) { if (connection === this) finishConnection(true) }
-        fun send(what: Int, seq: Long) {
-            val data = AbemaAccountAccessIpc.bundle(AbemaAccountAccessIpc.base(request, seq))
-            try { (remote ?: throw IllegalStateException()).send(Message.obtain().apply {
-                this.what = what; replyTo = reply; this.data = data
-            }) } finally { data.clear() }
-        }
+        fun send(what: Int, seq: Long) { if (remote == null || !outbound.sendControl(what, seq)) throw IllegalStateException() }
+    }
+    private val outbound: AbemaAccountOutbound<Messenger> = AbemaAccountOutbound { remote, what, seq ->
+        val data = AbemaAccountAccessIpc.bundle(AbemaAccountAccessIpc.base(request, seq))
+        try { remote.send(Message.obtain().apply { this.what = what; replyTo = reply; this.data = data }) }
+        finally { data.clear() }
     }
     private fun worker() = Looper.myLooper() != Looper.getMainLooper()
     private fun await(latch: CountDownLatch, limitMs: Long, requireLive: Boolean): Boolean {
@@ -181,23 +183,23 @@ internal class AndroidAbemaAccountAccessClient(context: Context, instanceId: Str
         if (!current()) return failure(AbemaAccountFailure.CANCELLED)
         return value
     }
+    // Worker-only. The send leaves this thread directly (#770) instead of
+    // through the main looper; sendHop is now the time until it has left.
     private fun transact(what: Int, expected: Int, waitMs: Long,
-        checkWait: ((CountDownLatch) -> Boolean)? = null, sendHop: ((Long) -> Unit)? = null): Map<String, Any>? {
-        val pending = synchronized(lock) {
-            if (operation != null || !live() || sequence == Long.MAX_VALUE) return null
-            Operation(++sequence, expected).also { operation = it }
-        }
-        val posted = SystemClock.elapsedRealtime()
-        main.post {
-            sendHop?.let { runCatching { it(SystemClock.elapsedRealtime() - posted) } }
-            try { if (live()) connection?.send(what, pending.sequence) else pending.done.countDown() }
-            catch (_: Throwable) { pending.done.countDown(); lose("SEND_FAILED"); revoked.set(true); close() }
-        }
+        checkWait: ((CountDownLatch) -> Boolean)? = null, sendHop: ((Long) -> Unit)? = null,
+        replyHop: ((Long) -> Unit)? = null): Map<String, Any>? {
+        val pending = exchange.begin(expected, ::live) ?: return null
         try {
+            val sending = SystemClock.elapsedRealtime()
+            try { if (!outbound.send(what, pending.sequence, ::live)) pending.done.countDown() }
+            catch (_: Throwable) { pending.done.countDown(); lose("SEND_FAILED"); revoked.set(true); close() }
+            sendHop?.let { runCatching { it(SystemClock.elapsedRealtime() - sending) } }
             val completed = checkWait?.invoke(pending.done) ?: await(pending.done, waitMs, true)
             if (!completed) { lose(if (live()) "REPLY_TIMEOUT" else liveCause()); revoked.set(true); close(); return null }
-            return pending.fields.takeIf { live() }
-        } finally { synchronized(lock) { if (operation === pending) operation = null }; pending.fields = null }
+            val fields = pending.fields.takeIf { live() }
+            if (fields != null) replyHop?.let { runCatching { it(pending.replyHopMs) } }
+            return fields
+        } finally { exchange.end(pending) }
     }
     fun checkWorker(): Boolean {
         if (!worker() || !current()) return false
@@ -206,15 +208,22 @@ internal class AndroidAbemaAccountAccessClient(context: Context, instanceId: Str
         return performAbemaAccountCheck(checks, AbemaAccountAccessIpc.CHECK_REPLY_MS, SystemClock::elapsedRealtime, ::current,
             dispatch = { dispatched, replyMs ->
                 var interrupted = false
-                // Where a lease check's time goes (#752): waiting for this
-                // client's check lock, the main-looper hop before sending, and
-                // the whole dispatched exchange until its reply wakes this worker.
+                var sent = -1L
+                var replied = -1L
+                // Where a lease check's time goes (#752, #770): waiting for this
+                // client's check lock, the send until it leaves, the whole
+                // dispatched exchange until its reply wakes this worker, and
+                // that exchange less both hops (remote).
                 runCatching { stats.time("lockWait", dispatched - started, dispatched) }
                 val fields = transact(AbemaAccountAccessIpc.CHECK, AbemaAccountAccessIpc.CHECKED, replyMs, { done ->
                     awaitAbemaAccountCheck(done, dispatched, dispatched + replyMs,
                         SystemClock::elapsedRealtime, ::live).also { interrupted = it.interrupted }.completed
-                }, sendHop = { stats.time("sendHop", it, SystemClock.elapsedRealtime()) })
-                runCatching { SystemClock.elapsedRealtime().let { stats.time("dispatch", it - dispatched, it) } }
+                }, sendHop = { sent = it; stats.time("sendHop", it, SystemClock.elapsedRealtime()) },
+                    replyHop = { replied = it })
+                runCatching { SystemClock.elapsedRealtime().let { now ->
+                    stats.time("dispatch", now - dispatched, now)
+                    if (sent >= 0 && replied >= 0) stats.time("remote", now - dispatched - sent - replied, now)
+                } }
                 AbemaAccountCheckCompletion(abemaAccountCheckAccepted(fields, request), interrupted)
             }, revoke = { lose("CHECK_REFUSED"); revoked.set(true); close() }, history = checkHistory,
             observe = { stats.count(it.event, SystemClock.elapsedRealtime()) }).also { accepted ->
@@ -225,17 +234,18 @@ internal class AndroidAbemaAccountAccessClient(context: Context, instanceId: Str
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
         acquired.set(false); credential = null
-        synchronized(lock) { operation?.done?.countDown() }
+        exchange.wake()
         main.post {
             val binding = connection
             if (binding?.remote == null) { finishConnection(true); return@post }
-            val seq = synchronized(lock) { if (sequence == Long.MAX_VALUE) sequence else ++sequence }
+            val seq = exchange.next()
             try { binding.send(AbemaAccountAccessIpc.CLOSE, seq) }
             catch (_: Throwable) { poisoned.set(true); finishConnection(false) }
         }
     }
     private fun finishConnection(confirmed: Boolean) {
-        revoked.set(true); acquired.set(false); credential = null
+        // A worker's live check and its send cannot straddle this revocation.
+        outbound.exclusive { revoked.set(true) }; acquired.set(false); credential = null
         val binding = connection
         var released = true
         binding?.binder?.let { runCatching { it.unlinkToDeath(binding.death, 0) } }
@@ -245,8 +255,8 @@ internal class AndroidAbemaAccountAccessClient(context: Context, instanceId: Str
         }
         if (!confirmed || !released) poisoned.set(true)
         cleanupConfirmed = confirmed && released && !poisoned.get()
-        if (cleanupConfirmed) { binding?.remote = null; binding?.binder = null; connection = null }
-        ready.countDown(); synchronized(lock) { operation?.done?.countDown() }; cleanup.countDown()
+        if (cleanupConfirmed) { binding?.remote = null; binding?.binder = null; connection = null; outbound.clear() }
+        ready.countDown(); exchange.wake(); cleanup.countDown()
     }
     fun awaitCleanup(): Boolean {
         if (!worker()) return false

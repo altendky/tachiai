@@ -95,6 +95,59 @@ internal fun performAbemaAccountCheck(
     } finally { lock.unlock() }
 }
 
+// The client's one in-flight lease exchange (#770). Replies complete it from a
+// dedicated reply thread rather than the viewer's main looper, so this owns the
+// sequence and the single pending operation under one lock. A reply applies only
+// to the exact pending sequence and kind while the lease is live; one arriving
+// after the feed stopped, or after the caller gave up, changes nothing.
+internal class AbemaAccountExchange {
+    class Operation(val sequence: Long, val expected: Int) {
+        val done = CountDownLatch(1)
+        @Volatile var fields: Map<String, Any>? = null
+        // How long the applied reply waited for the reply thread.
+        @Volatile var replyHopMs = 0L
+    }
+    private val lock = Any()
+    private var sequence = 1L
+    private var operation: Operation? = null
+    fun begin(expected: Int, live: () -> Boolean): Operation? = synchronized(lock) {
+        if (operation != null || !live() || sequence == Long.MAX_VALUE) return null
+        Operation(++sequence, expected).also { operation = it }
+    }
+    fun deliver(sequence: Long, what: Int, fields: Map<String, Any>, live: () -> Boolean,
+        replyHopMs: Long = 0L): Operation? = synchronized(lock) {
+        val pending = operation
+        if (pending == null || sequence != pending.sequence || what != pending.expected || !live()) return null
+        pending.replyHopMs = replyHopMs; pending.fields = fields; pending.done.countDown()
+        pending
+    }
+    fun end(pending: Operation) { synchronized(lock) { if (operation === pending) operation = null }; pending.fields = null }
+    // Wakes the waiting caller, which then sees the lease is no longer live.
+    fun wake() { synchronized(lock) { operation?.done?.countDown() } }
+    fun next(): Long = synchronized(lock) { if (sequence == Long.MAX_VALUE) sequence else ++sequence }
+}
+
+// Sends to the lease service from whichever thread asks (#770). A worker's
+// live check and its send are one step under this lock, as is any state change
+// passed to exclusive(), such as revocation before unbinding. A CLOSE is sent
+// only after the client closed, so no operation reaches the service after the
+// CLOSE that ends its lease. The target mirrors the main-owned connection.
+internal class AbemaAccountOutbound<T : Any>(private val deliver: (T, Int, Long) -> Unit) {
+    private val lock = Any()
+    private var target: T? = null
+    fun open(remote: T) { synchronized(lock) { target = remote } }
+    fun clear() { synchronized(lock) { target = null } }
+    fun <R> exclusive(block: () -> R): R = synchronized(lock) { block() }
+    // False when nothing was sent. A delivery failure propagates to the caller.
+    fun send(what: Int, sequence: Long, live: () -> Boolean): Boolean = synchronized(lock) {
+        val remote = target
+        if (remote == null || !live()) return false
+        deliver(remote, what, sequence); true
+    }
+    // OPEN and CLOSE need only a connected service, not a live lease.
+    fun sendControl(what: Int, sequence: Long): Boolean = send(what, sequence) { true }
+}
+
 internal fun abemaAccountCheckAccepted(fields: Map<String, Any>?, request: AbemaAccountAccessIpc.Request): Boolean {
     val sequence = fields?.get("sequence") as? Long ?: return false
     return sequence >= 1 && AbemaAccountAccessIpc.matches(fields, request, sequence) &&

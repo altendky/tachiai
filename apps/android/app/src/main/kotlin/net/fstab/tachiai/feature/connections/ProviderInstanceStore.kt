@@ -13,6 +13,7 @@ import net.fstab.tachiai.platform.storage.PrivateSecretStore
 import net.fstab.tachiai.platform.storage.StoreLockKind
 import net.fstab.tachiai.platform.storage.StoreLockStats
 import net.fstab.tachiai.platform.storage.StoreLockUse
+import net.fstab.tachiai.platform.storage.StoreReadStep
 import net.fstab.tachiai.platform.storage.processFileLocked
 import net.fstab.tachiai.presentation.*
 
@@ -39,7 +40,7 @@ internal class ProviderInstanceStore(private val store: PrivateSecretStore, priv
         } }, action)
     fun read(legacy: () -> Map<PrototypeService, ProviderSetup>): List<ProviderInstance> = readSnapshot(legacy).instances
     fun readSnapshot(legacy: () -> Map<PrototypeService, ProviderSetup>): ProviderInstanceRegistrySnapshot =
-        locked { readSnapshotUnlocked(legacy) }
+        readSnapshotRevisioned(legacy).first
 
     // The committed registry's revision without decrypting it (#745), or null
     // for the legacy view, whose contents span other files.
@@ -53,20 +54,27 @@ internal class ProviderInstanceStore(private val store: PrivateSecretStore, priv
         readSnapshotRevisioned(legacy).let { it.first.instances to it.second }
 
     // readRevisioned with this read's committed/legacy provenance (#752).
+    // Only the record read holds the store's locks. Decryption and decoding
+    // follow outside them, so revision reads and other readers never wait
+    // behind keystore work (#771). A missing registry's legacy view spans
+    // other files and is still built under the locks.
     fun readSnapshotRevisioned(legacy: () -> Map<PrototypeService, ProviderSetup>):
-        Pair<ProviderInstanceRegistrySnapshot, PrivateSecretRevision?> =
-        locked {
-            val read = store.readRevisioned()
-            readSnapshotUnlocked(legacy, read.plaintext) to
-                read.revision?.takeIf { read.plaintext != null && it != PrivateSecretRevision.ABSENT }
-        }
+        Pair<ProviderInstanceRegistrySnapshot, PrivateSecretRevision?> {
+        var legacyView: ProviderInstanceRegistrySnapshot? = null
+        val sealed = locked { store.readSealed().also { if (it.absent) legacyView = legacySnapshot(legacy) } }
+        legacyView?.let { return it to null }
+        val plaintext = checkNotNull(StoreLockStats.measure(StoreLockKind.PROVIDER_INSTANCES, StoreReadStep.DECRYPT, sealed::open))
+        return StoreLockStats.measure(StoreLockKind.PROVIDER_INSTANCES, StoreReadStep.DECODE) { decode(plaintext) } to
+            sealed.revision?.takeIf { it != PrivateSecretRevision.ABSENT }
+    }
 
     private fun readUnlocked(legacy: () -> Map<PrototypeService, ProviderSetup>): List<ProviderInstance> =
-        readSnapshotUnlocked(legacy).instances
+        (store.read()?.let(::decode) ?: legacySnapshot(legacy)).instances
 
-    private fun readSnapshotUnlocked(legacy: () -> Map<PrototypeService, ProviderSetup>,
-        stored: ByteArray? = store.read()): ProviderInstanceRegistrySnapshot {
-        val bytes = stored ?: return ProviderInstanceRegistrySnapshot(validate(defaultProviderInstances(legacy())), committed = false)
+    private fun legacySnapshot(legacy: () -> Map<PrototypeService, ProviderSetup>) =
+        ProviderInstanceRegistrySnapshot(validate(defaultProviderInstances(legacy())), committed = false)
+
+    private fun decode(bytes: ByteArray): ProviderInstanceRegistrySnapshot {
         check(bytes.size <= PRIVATE_SECRET_LIMIT)
         val entries = DataInputStream(ByteArrayInputStream(bytes)).use { input ->
             val version = input.readInt(); check(version in 1..3)

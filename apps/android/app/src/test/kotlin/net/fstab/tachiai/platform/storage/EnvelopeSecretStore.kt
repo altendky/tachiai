@@ -18,15 +18,21 @@ internal class EnvelopeSecretStore(@Volatile var decryptMs: Long = 0) : PrivateS
         readHook(); revisions.incrementAndGet()
         return PrivateSecretRevision.of(envelope?.copyOf())
     }
-    override fun readRevisioned(): RevisionedPrivateSecret {
+    // Runs inside each decryption, which a sealed read defers to open (#771).
+    @Volatile var decryptHook: () -> Unit = {}
+    override fun readRevisioned(): RevisionedPrivateSecret =
+        readSealed().let { RevisionedPrivateSecret(it.open(), it.revision) }
+    override fun readSealed(): SealedPrivateSecret {
         readHook()
         val stored = envelope?.copyOf()
-        val plaintext = stored?.let {
-            decrypts.incrementAndGet()
-            if (decryptMs > 0) Thread.sleep(decryptMs)
-            decryptPrivateSecret(key, binding, it)
+        return SealedPrivateSecret(stored == null, PrivateSecretRevision.of(stored)) {
+            stored?.let {
+                decrypts.incrementAndGet()
+                decryptHook()
+                if (decryptMs > 0) Thread.sleep(decryptMs)
+                decryptPrivateSecret(key, binding, it)
+            }
         }
-        return RevisionedPrivateSecret(plaintext, PrivateSecretRevision.of(stored))
     }
     override fun write(plaintext: ByteArray) { envelope = encryptPrivateSecret(key, binding, plaintext) }
 }

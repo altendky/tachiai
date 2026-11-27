@@ -65,13 +65,22 @@ internal class AndroidPrivateSecretStore private constructor(context: Context, b
     // The envelope's digest needs no key or decryption (#745).
     override fun revision(): PrivateSecretRevision = PrivateSecretRevision.of(readEnvelope())
 
-    override fun readRevisioned(): RevisionedPrivateSecret {
-        var envelope: ByteArray? = null
-        fun envelope() = readEnvelope().also { envelope = it }
-        val plaintext = if (readKey == null) {
-            envelope()?.let { decryptPrivateSecret(key(create = false), binding, it) }
-        } else readKey.read(::envelope) { key, bytes -> decryptPrivateSecret(key, binding, bytes) }
-        return RevisionedPrivateSecret(plaintext, PrivateSecretRevision.of(envelope))
+    override fun readRevisioned(): RevisionedPrivateSecret =
+        readSealed().let { RevisionedPrivateSecret(it.open(), it.revision) }
+
+    // Only the envelope file read happens here; the keystore key lookup and
+    // decryption wait for open, outside the owning store's lock (#771).
+    override fun readSealed(): SealedPrivateSecret {
+        if (readKey == null) {
+            val envelope = readEnvelope()
+            return SealedPrivateSecret(envelope == null, PrivateSecretRevision.of(envelope)) {
+                envelope?.let { decryptPrivateSecret(key(create = false), binding, it) }
+            }
+        }
+        val sealed = readKey.seal(::readEnvelope)
+        return SealedPrivateSecret(sealed.envelope == null, PrivateSecretRevision.of(sealed.envelope)) {
+            sealed.open { key, bytes -> decryptPrivateSecret(key, binding, bytes) }
+        }
     }
 
     private fun readEnvelope(): ByteArray? {

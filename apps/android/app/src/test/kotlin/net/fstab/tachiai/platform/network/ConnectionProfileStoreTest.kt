@@ -8,6 +8,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import javax.crypto.spec.SecretKeySpec
+import net.fstab.tachiai.platform.storage.EnvelopeSecretStore
 import net.fstab.tachiai.platform.storage.PrivateSecretStore
 import net.fstab.tachiai.platform.storage.PRIVATE_SECRET_LIMIT
 import net.fstab.tachiai.platform.storage.encryptPrivateSecret
@@ -144,6 +145,41 @@ class ConnectionProfileStoreTest {
             override fun write(plaintext: ByteArray) { wrote = true }
         }
         assertEquals("Saved", ConnectionProfileStore(secrets).add("Saved", profile()).single().name)
+    }
+
+    @Test fun routeChoiceSummariesSkipOnlyThePublicKeyTheRoutesScreenShows() {
+        val store = ConnectionProfileStore(MemorySecrets())
+        store.add("WireGuard", profile())
+        val shown = store.summaries().single()
+        assertNotNull(shown.publicKey)
+        assertEquals(shown.copy(publicKey = null), store.summaries(publicKeys = false).single())
+    }
+
+    @Test fun readsDecryptAndDecodeOutsideTheStoreLockSoWritesAndRevisionsProceed() {
+        val secrets = EnvelopeSecretStore()
+        val dir = java.nio.file.Files.createTempDirectory("profile-store").toFile()
+        val lock = java.io.File(dir, "connection-profiles.lock")
+        val store = ConnectionProfileStore(secrets, lock)
+        val first = store.add("First", profile()).single()
+        val entered = CountDownLatch(1); val release = CountDownLatch(1)
+        secrets.decryptHook = {
+            if (Thread.currentThread().name == "slow-read") { entered.countDown(); check(release.await(10, TimeUnit.SECONDS)) }
+        }
+        val pool = Executors.newFixedThreadPool(2)
+        try {
+            val slow = pool.submit<List<ConnectionSummary>> {
+                Thread.currentThread().name = "slow-read"; ConnectionProfileStore(secrets, lock).summaries()
+            }
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            val before = store.revision()
+            // Neither waits for that decryption: the read holds no lock now.
+            pool.submit { ConnectionProfileStore(secrets, lock).remove(first.id) }.get(5, TimeUnit.SECONDS)
+            assertNotEquals(before, pool.submit<Any?> { ConnectionProfileStore(secrets, lock).revision() }.get(5, TimeUnit.SECONDS))
+            release.countDown()
+            // The slow read returns the record it read under the lock.
+            assertEquals(listOf(first.id), slow.get(5, TimeUnit.SECONDS).map { it.id })
+            assertEquals(emptyList<ConnectionSummary>(), store.summaries())
+        } finally { pool.shutdownNow(); dir.deleteRecursively() }
     }
 
     @Test fun selectedRouteIsAReadOnlySnapshotAndMissingIdsNeverFallback() {

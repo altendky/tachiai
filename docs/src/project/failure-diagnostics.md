@@ -922,7 +922,8 @@ Media admission splits into closed timings. The fields add to the lines above:
   looper (below).
 - `owner=CHECK_STATS`: `receiveHop` (`CHECK` waiting for the main process's
   main looper, which the settings screens also use), and `replyHop` (the
-  finished check waiting for it again before replying).
+  finished check waiting for it again before replying). #770 moved both to a
+  service thread.
 
 Binder transit is the part of `dispatch` that the service's `receiveHop`,
 `queued`, `check` and `replyHop` don't cover.
@@ -960,11 +961,30 @@ The viewer's lease client now:
   `CLOSED` notice revokes at once, as before. Unbinding, binder-death handling
   and the connection object stay on main.
 
+The lease service in the main process (`AbemaAccountAccessService`) also
+handled every message on its main looper. It received `CHECK` there
+(`receiveHop`) and posted each finished check back there before replying
+(`replyHop`), along with every session's 100 ms validity pulse. Settings
+screens compose on that looper. In the #771 emulator run, `receiveHop` reached
+2.6 s while provider details opened. The service now runs its messages, sessions,
+pulses and replies on one dedicated thread (`abema-account-service`). That
+thread owns the session state the main looper owned, in the same order. Only
+the thread changed.
+
 The lease, binding and release rules are unchanged: sequence checks,
 coalescing, revocation on an unconfirmed check, `CLOSE` and cleanup
-confirmation. Each feed has its own lease client, so one feed's check never
-waits for another feed's check in the viewer. `lockWait` is still a wait behind
-the same feed's other request.
+confirmation.
+
+Each feed has its own lease client and its own check lock, so `lockWait` is a
+wait behind the same feed's other media request, never behind the other feed.
+In that #771 window, `lockWaitMaxMs=5472` matched `dispatchMaxMs=5461`: a
+request waited for its own feed's slow check. The two feeds do share parts of
+the main process:
+
+- Before this change, its main looper: both feeds' `CHECK` and reply hops.
+- The service's four check workers (`queued`).
+- The grant store's disk monitor and the store locks, inside the durable check
+  (`check`).
 
 The `client=CHECK_STATS` fields keep their names. Their meanings change:
 
@@ -976,6 +996,8 @@ The `client=CHECK_STATS` fields keep their names. Their meanings change:
   `replyHop`.
 
 On an older build, `dispatchMs − sendHopMs − replyHopMs` gives the same split.
+The `owner=CHECK_STATS` `receiveHop` and `replyHop` keep their names too. They
+are now waits for the service thread, not the main looper.
 
 ## Replay resume loading — 2026-11-26
 

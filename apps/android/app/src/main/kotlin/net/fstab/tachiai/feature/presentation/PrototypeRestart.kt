@@ -6,6 +6,7 @@ import android.content.Intent
 import android.os.Process
 import android.os.Build
 import net.fstab.tachiai.MainActivity
+import net.fstab.tachiai.platform.diagnostics.FailureDiagnostics
 import net.fstab.tachiai.presentation.ConfiguredFeedAssignments
 
 // Terminate only this owned prototype process after a durable picker checkpoint
@@ -24,15 +25,21 @@ internal fun restartPrototypeProcess(activity: Activity, cached: Boolean, assign
             activity.startActivity(destination)
         },
         finish = activity::finish,
+        flush = { FailureDiagnostics.flush(RESTART_JOURNAL_FLUSH_MS) },
         terminate = { Process.killProcess(Process.myPid()) })
 }
 
+// Bounds how long termination waits for failure records already reported (#757).
+internal const val RESTART_JOURNAL_FLUSH_MS = 1_000L
+
 internal fun performPrototypeRestart(processName: String, packageName: String, cached: Boolean,
-    checkpoint: () -> Unit, launch: () -> Unit, finish: () -> Unit, terminate: () -> Unit) {
+    checkpoint: () -> Unit, launch: () -> Unit, finish: () -> Unit, flush: () -> Unit, terminate: () -> Unit) {
     val suffix = if (cached) ":prototype_cached_player" else ":prototype_player"
     check(processName == packageName + suffix) { "Recovery requires the dedicated prototype process" }
     checkpoint()
     launch()
     finish()
+    // A bounded diagnostic wait; it can neither fail nor prevent the restart.
+    try { flush() } catch (_: Exception) { /* Diagnostics cannot replace recovery. */ }
     terminate()
 }

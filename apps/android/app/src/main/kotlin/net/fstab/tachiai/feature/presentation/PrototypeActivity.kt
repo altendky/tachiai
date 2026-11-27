@@ -13,6 +13,7 @@ import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import android.view.View
+import android.view.ViewGroup
 import android.webkit.WebView
 import android.widget.Button
 import android.widget.FrameLayout
@@ -506,10 +507,14 @@ open class PrototypeActivity : ComponentActivity() {
         // An asynchronous startup status cannot replace a viewer that still
         // owns players. Intentional navigation disposes that viewer first.
         if (budget != null) return
+        val previous = root
         root = null; progress = null; returnButton = null
-        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-        styleSystemBars(false)
-        setContent { TachiaiPrototypeTheme { PrototypeSourcePicker(listOfNotNull(setupMessage ?: message, pickerSelectionMessage).joinToString("\n").ifBlank { null },
+        ViewerMainSteps.time("pickerOrientation") { requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED }
+        ViewerMainSteps.time("pickerSystemBars") { styleSystemBars(false) }
+        // Timed apart from composing (#769): detaching the viewer's views,
+        // which setContent would otherwise do as it replaces them.
+        ViewerMainSteps.time("pickerDetachViewer") { (previous?.parent as? ViewGroup)?.removeView(previous) }
+        ViewerMainSteps.time<Unit>("pickerCompose") { setContent { TachiaiPrototypeTheme { PrototypeSourcePicker(listOfNotNull(setupMessage ?: message, pickerSelectionMessage).joinToString("\n").ifBlank { null },
             onConnections = { startActivity(Intent(this, ConnectionProfilesActivity::class.java)) },
             setupReady = setupReady, providerInstances = providerInstances, configuredSources = configuredSources,
             initialAssignments = pickerAssignments, onAssignmentsChanged = ::rememberPickerAssignments,
@@ -522,7 +527,7 @@ open class PrototypeActivity : ComponentActivity() {
             obsoleteSetup = obsoleteSetup, onResetStreamSettings = ::resetStreamSettings,
             playbackAvailable = playbackAvailable, recoveryMessage = recoveryMessage,
             onRecovery = if (hasRecovery) ({ showRecoveryDialog(true) }) else null,
-            onWatch = ::watch) } }
+            onWatch = ::watch) } } }
     }
 
     private fun updateRecoveryState() {
@@ -2824,6 +2829,10 @@ open class PrototypeActivity : ComponentActivity() {
         cancelRoutePreparation()
         epoch.incrementAndGet(); invalidatePlay(); handler.removeCallbacks(ticker)
         budget?.stop()
+        // Detaching a surface blocks main until the playback thread applies it
+        // (#769), so detach before closing feeds stops their players: behind a
+        // stop, the detach would wait for the whole renderer reset.
+        ViewerMainSteps.time("disposeSurfaces") { surfaces.forEach { it.player = null } }
         // Closes each feed: its session, the player's stop and helper teardown.
         ViewerMainSteps.time("disposeFeeds") { cachedRun?.let(cachedCleanup::end) }
         if (!diagnostics.cleanupAll(FailureStage.VIEWER_END) { ViewerMainSteps.time("disposeViewer") { viewer?.endSession() } }) cleanupFailed = true
@@ -2839,7 +2848,7 @@ open class PrototypeActivity : ComponentActivity() {
             if (!diagnostics.cleanupAll(FailureStage.PLAYBACK_CLOSE) { ViewerMainSteps.time("disposePlayback") { playback?.close() } }) cleanupFailed = true
         } else playback?.close()
         playback = null
-        ViewerMainSteps.time("disposeSurfaces") { surfaces.forEach { it.player = null } }; surfaces = emptyList()
+        surfaces = emptyList()
         if (cachedRun == null) sessions.forEachIndexed { index, session ->
             if (!feedDiagnostics(index).cleanupAll(FailureStage.FEED_CLOSE) { session?.close() } || session?.cleanupFailed == true) {
                 feedDiagnostics(index).report(FailureStage.FEED_CLEANUP_UNCONFIRMED)

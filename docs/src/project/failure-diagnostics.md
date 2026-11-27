@@ -989,10 +989,12 @@ before a `Skipped N frames` line is the step that held the thread.
 | --- | --- |
 | `stop` | All of Stop, until the picker is shown again. |
 | `stopPicker`, `stopRefreshSetup` | Showing the picker, and queueing its setup read. |
+| `pickerOrientation`, `pickerSystemBars`, `pickerDetachViewer`, `pickerCompose` | Within `stopPicker`: releasing the viewer's landscape request, restyling the system bars, removing the viewer's views from the window, then composing the picker. |
 | `dispose` | The whole viewer teardown. It also runs when a new viewer opens. |
 | `disposeSavePositions`, `disposeMediaSession`, `disposeStartupScopes` | Queueing replay position writes, closing the TV media session, retiring startup scopes. |
+| `disposeSurfaces` | Detaching players from their surfaces, before the feeds close. |
 | `disposeFeeds` | Closing each feed: its session, the player's pause and stop, and its helper teardown. |
-| `disposeViewer`, `disposePlayback`, `disposeSurfaces`, `disposeRoutes` | Ending the viewer's views, closing the pair controller, detaching players from their surfaces, releasing routes. |
+| `disposeViewer`, `disposePlayback`, `disposeRoutes` | Ending the viewer's views, closing the pair controller, releasing routes. |
 | `helperDestroy` | Destroying a feed's WebView helper. |
 | `playerRelease` | `ExoPlayer.release()`. It runs after Stop returns, once the cleanup worker has closed the transport. |
 | `stopProxyClear` | Starting the WebView proxy clear. |
@@ -1013,6 +1015,10 @@ waiting for it. The reset then overlaps the cleanup worker's transport close.
 That worker then waits, for at most 1 s, until the playback thread has handled
 the stop. Only then is `release()` posted to main, and little is left for it to
 wait for.
+
+Detaching a player's surface also blocks main, until the playback thread has
+applied the change. Behind a `stop()`, that wait would include the whole reset.
+Stop therefore detaches the surfaces before it closes the feeds.
 
 `release()`, its 500 ms timeout, the #730 late-release evidence and the
 cleanup receipt's confirmation are unchanged. If the stop fails or the wait

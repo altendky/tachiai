@@ -1544,7 +1544,11 @@ TV, the next Back hides the overlay without stopping playback. Back with
 all controls already hidden asks "Stop playback?" before returning to sources
 ([#617](https://github.com/altendky/tachiai/issues/617)). Keep watching is the
 focused default, and Back on the dialog keeps playing. The top bar's Stop
-(formerly the Back to sources button) and More's Stop ask the same. Stops the app makes itself, such as
+(formerly the Back to sources button) and More's Stop ask the same. Back
+after Watch, while the picker still checks provider connections and no viewer
+exists yet, also asks "Stop playback?", even with an Episodes page open; Stop
+abandons the check and keeps the picker, and Back no longer closes the app
+there ([#772](https://github.com/altendky/tachiai/issues/772)). Stops the app makes itself, such as
 failures, cleanup refusals and deadlines, don't ask. A timing step stays
 focused while its adjustment runs, showing "Adjustment in progress", so a quick
 repeated Select can't land on another control. The explicit Stop

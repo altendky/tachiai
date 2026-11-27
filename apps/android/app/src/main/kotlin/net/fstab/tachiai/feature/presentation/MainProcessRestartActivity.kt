@@ -9,6 +9,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.Process
 import android.os.SystemClock
+import android.view.ViewTreeObserver
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -29,6 +30,9 @@ class MainProcessRestartActivity : ComponentActivity() {
     private var priorPid = 0
     private var resumed = false
     private var opened = false
+    // When "Restarting Tachiai…" first drew, and when the old process was first seen gone (#773).
+    private var messageDrawnAt = -1L
+    private var readyAt = -1L
     private val poll = Runnable { checkExit() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -82,6 +86,11 @@ class MainProcessRestartActivity : ComponentActivity() {
         when (current.poll(SystemClock.elapsedRealtime(), processes)) {
             PlaybackRestartStatus.WAITING -> handler.postDelayed(poll, 50)
             PlaybackRestartStatus.READY -> {
+                val now = SystemClock.elapsedRealtime()
+                if (readyAt < 0) readyAt = now
+                if (!restartMessageShown(now, messageDrawnAt.takeIf { it >= 0 }, readyAt)) {
+                    handler.postDelayed(poll, 50); return
+                }
                 opened = true
                 try {
                     // The launcher form opens the main menu in debug builds too.
@@ -102,7 +111,18 @@ class MainProcessRestartActivity : ComponentActivity() {
         addView(TextView(this@MainProcessRestartActivity).apply { text = message })
     }
 
-    private fun showWaiting() { setContentView(layout("Restarting Tachiai…")) }
+    private fun showWaiting() {
+        messageDrawnAt = -1L; readyAt = -1L
+        val view = layout("Restarting Tachiai…")
+        setContentView(view)
+        // Tachiai reopens only once this message has reached the screen (#773).
+        view.viewTreeObserver.addOnDrawListener(object : ViewTreeObserver.OnDrawListener {
+            override fun onDraw() {
+                if (messageDrawnAt < 0) messageDrawnAt = SystemClock.elapsedRealtime()
+                view.post { if (view.viewTreeObserver.isAlive) view.viewTreeObserver.removeOnDrawListener(this) }
+            }
+        })
+    }
 
     private fun showFailure() {
         handler.removeCallbacks(poll)

@@ -24,6 +24,16 @@ internal fun restartMainProcess(activity: Activity) {
         terminate = { Process.killProcess(Process.myPid()) })
 }
 
+// #773: once the old main process has ended, the relay keeps "Restarting
+// Tachiai…" on screen for at least RESTART_MESSAGE_MIN_MS after it first drew,
+// so it can be read. A message that has not drawn delays the restart by at
+// most RESTART_MESSAGE_WAIT_MS after the old process ended.
+internal const val RESTART_MESSAGE_MIN_MS = 500L
+internal const val RESTART_MESSAGE_WAIT_MS = 1_000L
+
+internal fun restartMessageShown(now: Long, drawnAt: Long?, readyAt: Long): Boolean =
+    if (drawnAt != null) now - drawnAt >= RESTART_MESSAGE_MIN_MS else now - readyAt >= RESTART_MESSAGE_WAIT_MS
+
 internal fun performMainRestart(processName: String, packageName: String,
     launch: () -> Unit, finish: () -> Unit, flush: () -> Unit, terminate: () -> Unit) {
     check(processName == packageName) { "Recovery requires the main process" }

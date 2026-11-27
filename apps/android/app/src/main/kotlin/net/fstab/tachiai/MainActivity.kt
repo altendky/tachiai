@@ -107,6 +107,8 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // The manifest theme only sets the starting window (#773); screens drawn here keep the app theme.
+        setTheme(R.style.Theme_Tachiai)
         super.onCreate(savedInstanceState)
         reportDebugLaunch(DebugLaunchSource.CREATE)
         if (openStreamPicker()) return

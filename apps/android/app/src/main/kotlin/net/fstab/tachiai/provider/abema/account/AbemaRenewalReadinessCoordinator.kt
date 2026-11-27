@@ -9,7 +9,9 @@ internal class AbemaRenewalReadinessCoordinator<T>(private val elapsed: () -> Lo
     // stop a resume loop, short enough that a deliberate Retry starts a fresh
     // renewal instead of replaying the failure for a whole minute.
     private val temporaryCooldownMs: Long = 10_000) {
-    enum class Status { READY, LAUNCH, WAIT, FAILURE, TEMPORARY_FAILURE, INTERACTION_REQUIRED, STORAGE_FAILURE }
+    // CLEANUP_UNCONFIRMED: this process quarantined the instance after an
+    // unconfirmed account cleanup (#783); only a restart clears it.
+    enum class Status { READY, LAUNCH, WAIT, FAILURE, TEMPORARY_FAILURE, INTERACTION_REQUIRED, STORAGE_FAILURE, CLEANUP_UNCONFIRMED }
     enum class Completion { ABSENT, PENDING, CLEANUP_UNCONFIRMED, READY, FAILURE, TEMPORARY_FAILURE, INTERACTION_REQUIRED, STORAGE_FAILURE }
     data class Evidence(val completion: Completion, val diagnostic: AbemaRenewalDiagnostic? = null,
         val producerDiagnostic: AbemaRenewalDiagnostic? = null)

@@ -18,6 +18,8 @@ internal fun abemaAccountReadinessMessage(result: AbemaAccountReadinessResult): 
         "The saved ABEMA account could not be read or updated. Open ABEMA account in Providers to retry validation or Forget."
     AbemaAccountReadinessResult.FAILURE ->
         "ABEMA account could not be renewed. Open ABEMA account in Providers to check the connection."
+    // The same notice provider details and Manage streams show with Restart (#764, #783).
+    AbemaAccountReadinessResult.CLEANUP_UNCONFIRMED -> net.fstab.tachiai.feature.connections.PROVIDER_CLEANUP_RESTART_MESSAGE
     AbemaAccountReadinessResult.HANDOFF -> ABEMA_ACCOUNT_RENEWING_MESSAGE
     AbemaAccountReadinessResult.READY -> null
 }

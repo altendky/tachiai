@@ -17,7 +17,11 @@ import net.fstab.tachiai.BuildConfig
 // provider to callers without DUMP, and call() checks the UID.
 //
 //   adb shell content call --uri content://net.fstab.tachiai.debug.startup-cleanup-fault --method poison-next
+//   adb shell content call --uri content://net.fstab.tachiai.debug.startup-cleanup-fault --method account-poison-next
 //   adb shell content call --uri content://net.fstab.tachiai.debug.startup-cleanup-fault --method clear
+//
+// account-poison-next (#783) instead reports the next ABEMA lease session end
+// as unconfirmed, which poisons that account instance in the main process.
 //
 // clear only disarms; an instance already poisoned stays blocked until the
 // main process restarts. The reply is one closed DebugStartupCleanupFaultResult.
@@ -37,7 +41,8 @@ class StartupCleanupFaultTriggerProvider : ContentProvider() {
         if (!enabled() || uid != SHELL_UID && uid != ROOT_UID) throw SecurityException("Not available")
         val result = if (arg != null || extras?.isEmpty == false) DebugStartupCleanupFaultResult.INVALID_REQUEST else when (method) {
             POISON_NEXT -> DebugStartupCleanupFaults.arm()
-            CLEAR -> DebugStartupCleanupFaults.clear()
+            ACCOUNT_POISON_NEXT -> net.fstab.tachiai.provider.abema.account.DebugAbemaAccountCleanupFaults.arm()
+            CLEAR -> { net.fstab.tachiai.provider.abema.account.DebugAbemaAccountCleanupFaults.clear(); DebugStartupCleanupFaults.clear() }
             else -> DebugStartupCleanupFaultResult.INVALID_REQUEST
         }
         return Bundle().apply { putString("result", result.name) }
@@ -54,6 +59,7 @@ class StartupCleanupFaultTriggerProvider : ContentProvider() {
 
     private companion object {
         const val POISON_NEXT = "poison-next"
+        const val ACCOUNT_POISON_NEXT = "account-poison-next"
         const val CLEAR = "clear"
         // android.os.Process.SHELL_UID and ROOT_UID are not public SDK constants.
         const val SHELL_UID = 2000

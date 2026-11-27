@@ -4,7 +4,7 @@ import java.util.concurrent.Executors
 
 // How a lease session's end in the ordinary process resolved (#783), for one
 // closed line. Anything but CONFIRMED poisons the instance until that process ends.
-internal enum class AbemaSessionEnd { CONFIRMED, JOBS_RUNNING, ATTACHMENT_UNCONFIRMED, INTERRUPTED, CLOCK, REJECTED }
+internal enum class AbemaSessionEnd { CONFIRMED, JOBS_RUNNING, ATTACHMENT_UNCONFIRMED, INTERRUPTED, CLOCK, REJECTED, DEBUG_FAULT }
 
 // Waits for a lease session's own work and its owner attachment to confirm
 // cleanup. A Stop during acquisition cancels a validation that may still be

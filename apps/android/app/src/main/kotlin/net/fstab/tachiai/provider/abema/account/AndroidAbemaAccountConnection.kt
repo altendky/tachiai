@@ -32,6 +32,9 @@ internal object AbemaAccountWorkers {
     val cancellation = Executors.newFixedThreadPool(2) { Thread(it, "abema-account-cancel").apply { isDaemon = true } }
     private val poisonedOwners = ConcurrentHashMap<String, AtomicBoolean>()
     fun poisoned(instanceId: String) = poisonedOwners.computeIfAbsent(instanceId) { AtomicBoolean() }
+    // A poisoned account instance blocks the provider like an unconfirmed
+    // startup cleanup, with the same Restart notice (#783).
+    init { ProviderStartupScopeCleanup.addQuarantineSource { id -> poisonedOwners[id]?.get() == true } }
 }
 
 // Distinct per-instance AES-GCM binding, no-backup AtomicFile and durable

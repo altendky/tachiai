@@ -2760,6 +2760,7 @@ open class PrototypeActivity : ComponentActivity() {
                                 AbemaAccountReadinessResult.TEMPORARY_FAILURE -> FailureCategory.ABEMA_READINESS_TEMPORARY_FAILURE
                                 AbemaAccountReadinessResult.STORAGE_FAILURE -> FailureCategory.ABEMA_READINESS_STORAGE_FAILURE
                                 AbemaAccountReadinessResult.INTERACTION_REQUIRED -> FailureCategory.ABEMA_READINESS_INTERACTION_REQUIRED
+                                AbemaAccountReadinessResult.CLEANUP_UNCONFIRMED -> FailureCategory.ABEMA_READINESS_CLEANUP_UNCONFIRMED
                                 else -> FailureCategory.ABEMA_READINESS_FAILURE
                             }
                             feedDiagnostics(index).reportCategory(FailureStage.CACHED_ABEMA_ACCOUNT_PREPARE, category)

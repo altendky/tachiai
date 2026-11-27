@@ -423,9 +423,11 @@ class AbemaAccountAccessService : Service() {
             try { AbemaSessionEndWorkers.executor.execute {
                 val began = SystemClock.elapsedRealtime()
                 // Creation can finish after cancellation; close that exact attachment too.
-                val result = awaitAbemaSessionEnd(AbemaAccountAccessIpc.END_MS, SystemClock::elapsedRealtime,
+                val waited = awaitAbemaSessionEnd(AbemaAccountAccessIpc.END_MS, SystemClock::elapsedRealtime,
                     { Thread.sleep(10) }, { attachment?.close() }, { jobs.get() == 0 },
                     { attachment?.cleanupConfirmed != false })
+                // Debug builds can force this outcome (#783); the cleanup above still ran.
+                val result = if (DebugAbemaAccountCleanupFaults.take()) AbemaSessionEnd.DEBUG_FAULT else waited
                 val receipt = result == AbemaSessionEnd.CONFIRMED
                 runCatching { android.util.Log.d("TachiaiAbemaAccount",
                     abemaSessionEndLine(result, SystemClock.elapsedRealtime() - began)) }

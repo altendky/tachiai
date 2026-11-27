@@ -320,6 +320,11 @@ decodes again. A missing registry, a read failure, or 30 s since the last full
 read also forces a full read. The 30 s bound covers a key that became unusable
 while its record stayed unchanged.
 
+Any read of either store holds those locks only while it reads the encrypted
+record. It decrypts and decodes the record after releasing them
+([#771](https://github.com/altendky/tachiai/issues/771)). The plaintext stays
+with that read's caller, as before.
+
 The verdict holds only the captured owner or its proof, never store plaintext,
 keys or decrypted records. The account grant store, its revision and
 renewal-successor checks, route admission, poisoning and entitlement checks are

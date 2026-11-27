@@ -17,6 +17,13 @@ internal interface PrivateSecretStore {
     fun revision(): PrivateSecretRevision? = null
     // One read with the revision of exactly the record it decrypted.
     fun readRevisioned(): RevisionedPrivateSecret = RevisionedPrivateSecret(read(), null)
+    // One read of exactly one stored record, decrypted only by open() (#771).
+    // Callers hold the owning store's lock for this call alone and open the
+    // record after releasing it. A store that cannot defer decryption opens
+    // the record here.
+    fun readSealed(): SealedPrivateSecret = readRevisioned().let { read ->
+        SealedPrivateSecret(read.plaintext == null, read.revision) { read.plaintext }
+    }
 }
 
 // A digest of one exact encrypted record, holding no plaintext (#745). Every
@@ -35,6 +42,15 @@ internal class PrivateSecretRevision private constructor(private val digest: Byt
 
 internal class RevisionedPrivateSecret(val plaintext: ByteArray?, val revision: PrivateSecretRevision?) {
     override fun toString() = "RevisionedPrivateSecret(redacted)"
+}
+
+// A record read under its store's lock but not yet decrypted (#771). It holds
+// only the encrypted envelope until open() returns the plaintext a locked
+// read would have returned. absent means no record was stored.
+internal class SealedPrivateSecret(val absent: Boolean, val revision: PrivateSecretRevision?,
+    private val decrypt: () -> ByteArray?) {
+    fun open(): ByteArray? = decrypt()
+    override fun toString() = "SealedPrivateSecret(redacted)"
 }
 
 internal fun encryptPrivateSecret(key: SecretKey, binding: ByteArray, plaintext: ByteArray): ByteArray {

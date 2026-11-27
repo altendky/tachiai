@@ -8,12 +8,20 @@ internal class OperationStats(private val name: String, private val intervalMs: 
     private val lock = Any()
     private val counts = linkedMapOf<String, Long>()
     private val timers = linkedMapOf<String, Timer>()
+    private val peaks = linkedMapOf<String, Long>()
     private var since = Long.MIN_VALUE
     init { require(name.matches(NAME) && intervalMs > 0) }
 
     fun count(event: String, nowMs: Long, delta: Long = 1) {
         require(event.matches(EVENT))
         synchronized(lock) { started(nowMs); counts[event] = (counts[event] ?: 0L) + delta }
+    }
+
+    // The largest sampled value in the window, such as a queue depth.
+    fun peak(event: String, value: Long, nowMs: Long) {
+        require(event.matches(EVENT))
+        val bounded = value.coerceIn(0L, 1_000_000_000L)
+        synchronized(lock) { started(nowMs); peaks[event] = maxOf(peaks[event] ?: 0L, bounded) }
     }
 
     fun time(event: String, durationMs: Long, nowMs: Long) {
@@ -27,19 +35,20 @@ internal class OperationStats(private val name: String, private val intervalMs: 
     }
 
     // The accumulated line once intervalMs has passed since the first event
-    // it covers; the totals then restart.
-    fun drain(nowMs: Long): String? = synchronized(lock) {
-        if (since == Long.MIN_VALUE || nowMs - since < intervalMs) return null
+    // it covers, or at once when forced; the totals then restart.
+    fun drain(nowMs: Long, force: Boolean = false): String? = synchronized(lock) {
+        if (since == Long.MIN_VALUE || (!force && nowMs - since < intervalMs)) return null
         val line = buildString {
             append(name); append(" windowMs="); append(nowMs - since)
             for ((event, count) in counts) { append(' '); append(event); append('='); append(count) }
+            for ((event, value) in peaks) { append(' '); append(event); append('='); append(value) }
             for ((event, timer) in timers) {
                 append(' '); append(event); append('='); append(timer.count)
                 append(' '); append(event); append("Ms="); append(timer.totalMs)
                 append(' '); append(event); append("MaxMs="); append(timer.maxMs)
             }
         }
-        counts.clear(); timers.clear(); since = Long.MIN_VALUE
+        counts.clear(); timers.clear(); peaks.clear(); since = Long.MIN_VALUE
         line
     }
 

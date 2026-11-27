@@ -109,7 +109,9 @@ removed. Capacity eviction removes older sessions as a group, preserving the
 first record for retained sessions. History therefore survives a normal
 restart, but is not an indefinite audit log. With no further writes, existing
 history remains until explicitly cleared. Atomic replacement and a stable file
-lock coordinate the prototype's separate processes. Invalid/oversized history
+lock coordinate the prototype's separate processes. Each process writes
+through one [journal writer](#failure-journal-writer-757--2026-11-26).
+Invalid/oversized history
 is left intact for investigation and is not silently overwritten. Recording
 failure produces only the fixed `JOURNAL_UNAVAILABLE` marker and never replaces
 the original error or skips the remaining cleanup.
@@ -965,6 +967,62 @@ The live initial catch-up wait (`LIVE_POSITION_FAILED`) has the same shape: a
 fixed 8 s wait from its seek to the live default position, checked while the
 player may still be buffering. It is unchanged, because live positions are
 relative to a moving window and no failures from it have been observed.
+
+## Failure journal writer (#757) — 2026-11-26
+
+Each failure record used to be written synchronously by the reporting thread,
+under a process lock and the journal's file lock, with a file rewrite and a
+sync. At Stop, several loader threads and the viewer's main thread reported at
+once and waited 0.2–1.6 s behind each other's syncs. Media3 cancels a load by
+interrupting its loader thread, and an interrupted thread can't take the
+interruptible file lock. That record was lost and the reporter logged
+`event=JOURNAL_UNAVAILABLE`
+([#757](https://github.com/altendky/tachiai/issues/757)).
+
+Each process now has one journal writer. A reporting thread still reduces the
+error to its closed record on its own thread, then hands that record to the
+writer's bounded in-memory queue (256 records) and returns. It doesn't wait for
+file I/O, take the file lock, or clear its interrupt. The writer's own thread
+applies queued records in order, at most 32 per batch, with one journal read,
+replace and sync per batch. The result is the same journal that the same
+records written one by one would produce. Player release and cancelled loaders
+therefore never wait on journal I/O, so the player release deadlines
+([#731](https://github.com/altendky/tachiai/issues/731)) are unaffected.
+
+A full queue drops the new record and logs `event=JOURNAL_DROPPED`. A batch
+that can't be written is retried record by record, and each record that still
+fails logs `event=JOURNAL_UNAVAILABLE`, as before. Invalid existing history is
+still left untouched.
+
+The queue lives only in memory. Recovery restart (`restartPrototypeProcess`)
+waits up to 1 s for records already reported, after finishing the Activity and
+before terminating the process. A flush that runs out of time or fails doesn't
+stop the restart. If the process dies any other way, records still queued can
+be lost. A record normally stays queued for about one batch's sync; `pending`
+below measures it.
+
+The journal's v1 format, contents, capacity and seven-day retention are
+unchanged, and existing files are read as before.
+
+Closed counters under `TachiaiFailure`, in the #745 `OperationStats` form, give
+only fixed names, counts and milliseconds:
+
+```text
+journal=FAILURE_WRITER windowMs=… queued=… dropped=… batches=… written=… lost=…
+  flushTimeout=… flushPending=… queueDepth=… write=… writeMs=… writeMaxMs=…
+  pending=… pendingMs=… pendingMaxMs=… flush=… flushMs=… flushMaxMs=…
+```
+
+`queueDepth` is the deepest queue seen in the window. `write` times each batch's
+journal I/O. `pending` times each record from hand-off until it was written or
+lost. `flush` times the restart's wait. Fields that didn't occur are left out.
+The line is logged every 30 s while records keep arriving, once the writer has
+been idle for 5 s, and at each flush.
+
+JVM tests cover an interrupted reporter, a report made by a loader thread while
+its load is cancelled, concurrent reporters while the writer is blocked, batch
+equivalence, a full queue, storage failures, a bounded flush, and records that
+are durable when a recovery restart terminates the process.
 
 ## Collecting one device's evidence
 

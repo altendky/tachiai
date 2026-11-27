@@ -2871,6 +2871,8 @@ open class PrototypeActivity : ComponentActivity() {
         releaseRoutes()
         if (!diagnostics.cleanupAll(FailureStage.AUDIO_FOCUS_CLOSE) { focus?.close() }) cleanupFailed = true
         focus = null
+        // Debug builds only (#784): a shell-armed fault reports this viewer's cleanup as unconfirmed.
+        if (budget != null && DebugViewerCleanupFaults.take()) cleanupFailed = true
         budget = null
         disposing = false
         updateRecoveryState()

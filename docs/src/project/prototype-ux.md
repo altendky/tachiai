@@ -194,6 +194,21 @@ pending fault. Like the route fault trigger, it requires `DUMP`, accepts only
 the shell or root UID, is disabled in the inspection build, and is absent from
 release builds.
 
+The viewer's restart recovery has a matching debug trigger
+([#784](https://github.com/altendky/tachiai/issues/784)):
+
+```text
+adb shell content call --uri content://net.fstab.tachiai.debug.viewer-cleanup-fault --method poison-next
+adb shell content call --uri content://net.fstab.tachiai.debug.viewer-cleanup-fault --method clear
+```
+
+`poison-next` makes the next viewer that closes in the player process report
+its cleanup as unconfirmed, so the picker shows "Playback recovery required"
+with Restart. The real cleanup still runs. Restarting the player ends that
+process, which also drops any pending fault. `clear` only disarms a pending
+fault. It has the same `DUMP`, shell-or-root, inspection-build and release-build
+limits as the other triggers.
+
 Account transactions stay on their chosen route. During playback, only
 [automatic route recovery](#automatic-route-recovery) moves feeds to another
 configured route. ABEMA account settings use a compact

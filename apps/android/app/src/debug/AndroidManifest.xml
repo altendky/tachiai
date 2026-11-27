@@ -21,6 +21,13 @@
             android:exported="true"
             android:permission="android.permission.DUMP"
             android:process=":prototype_cached_player" />
+        <!-- Viewer cleanup fault trigger (#784): shell only, in the cached viewer's process. -->
+        <provider
+            android:name=".feature.presentation.ViewerCleanupFaultTriggerProvider"
+            android:authorities="${applicationId}.debug.viewer-cleanup-fault"
+            android:exported="true"
+            android:permission="android.permission.DUMP"
+            android:process=":prototype_cached_player" />
         <!-- Startup cleanup fault trigger (#764): shell only, in the default process. -->
         <provider
             android:name=".platform.network.StartupCleanupFaultTriggerProvider"

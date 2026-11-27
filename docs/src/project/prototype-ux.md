@@ -168,7 +168,13 @@ Tachiai restarts, so Retry would not help. The page then says "Connection
 cleanup could not be confirmed. Restart Tachiai before using this provider
 again. Saved app data will be kept." with Restart, and the status reads
 Connection cleanup unconfirmed. Restart finishes pending saves for that
-provider and shows "Restarting Tachiai…" while the main process ends. Tachiai
+provider and shows "Restarting Tachiai…" while the main process ends. The
+message stays at least half a second once it appears, so it can be read. If it
+can't appear within a second of the old process ending, the restart goes on
+without it. The relay and Tachiai's starting window follow the device's light
+or dark mode, and the main process ends only once the relay covers the page, so
+the restart shows no black or opposite-theme screen
+([#773](https://github.com/altendky/tachiai/issues/773)). Tachiai
 then reopens at the main menu. If the restart can't be confirmed, the relay
 says "Tachiai could not be restarted safely. Saved app data has been kept."
 with Check again and Close. This is the viewer's restart recovery applied to

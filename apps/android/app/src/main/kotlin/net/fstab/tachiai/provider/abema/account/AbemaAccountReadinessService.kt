@@ -176,6 +176,8 @@ internal object AndroidAbemaRenewalReadiness {
         return try {
             ownedAdmission.retireExpiredPending()
             if (!permitted()) return AbemaRenewalReservation.Deferred
+            if (AbemaAccountWorkers.poisoned(instance).get())
+                return AbemaRenewalReservation.NoWork(failed(AbemaRenewalReadinessCoordinator.Status.CLEANUP_UNCONFIRMED).status)
             fun unexpired(binding: AbemaAccountConnectionBinding, owner: AbemaCatalogRouteOwner,
                 snapshot: AbemaAccountSnapshot, wall: Long): Boolean = runCatching {
                 val record = snapshot.record
@@ -243,7 +245,9 @@ internal object AndroidAbemaRenewalReadiness {
             if (!permitted()) return AbemaRenewalReservation.Deferred
             AbemaRenewalReservation.NoWork(failed(when (error.category) {
                 AbemaAccountFailure.STORAGE_FAILED -> AbemaRenewalReadinessCoordinator.Status.STORAGE_FAILURE
-                AbemaAccountFailure.CANCELLED -> AbemaRenewalReadinessCoordinator.Status.FAILURE
+                AbemaAccountFailure.CANCELLED -> if (AbemaAccountWorkers.poisoned(instance).get())
+                    AbemaRenewalReadinessCoordinator.Status.CLEANUP_UNCONFIRMED else AbemaRenewalReadinessCoordinator.Status.FAILURE
+                AbemaAccountFailure.CLEANUP_FAILED -> AbemaRenewalReadinessCoordinator.Status.CLEANUP_UNCONFIRMED
                 else -> AbemaRenewalReadinessCoordinator.Status.TEMPORARY_FAILURE
             }).status)
         } catch (_: Throwable) {

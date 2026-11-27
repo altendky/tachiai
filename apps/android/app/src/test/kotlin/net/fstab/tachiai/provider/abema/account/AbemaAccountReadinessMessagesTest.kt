@@ -29,6 +29,13 @@ class AbemaAccountReadinessMessagesTest {
         assertNotEquals(ABEMA_ACCOUNT_CHECKING_MESSAGE, ABEMA_ACCOUNT_RENEWING_MESSAGE)
     }
 
+    // #783: a poisoned account instance says what provider details and Manage
+    // streams say, where their Restart is offered.
+    @Test fun anUnconfirmedAccountCleanupUsesTheProvidersRestartNotice() {
+        assertEquals(net.fstab.tachiai.feature.connections.PROVIDER_CLEANUP_RESTART_MESSAGE,
+            message(AbemaAccountReadinessResult.CLEANUP_UNCONFIRMED))
+    }
+
     @Test fun theFeedsUnresolvedAccountFailurePointsToTheSameProvidersPlace() {
         val feed = PrototypeFailureReason.ABEMA_ACCOUNT_UNAVAILABLE.message
         assertTrue(feed.endsWith("Open ABEMA account in Providers to check the connection."))

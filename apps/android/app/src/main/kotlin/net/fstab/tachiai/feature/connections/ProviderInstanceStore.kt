@@ -50,9 +50,14 @@ internal class ProviderInstanceStore(private val store: PrivateSecretStore, priv
     // One locked read and the revision of exactly the committed record it
     // decoded; null revision for the legacy view or a store without revisions.
     fun readRevisioned(legacy: () -> Map<PrototypeService, ProviderSetup>): Pair<List<ProviderInstance>, PrivateSecretRevision?> =
+        readSnapshotRevisioned(legacy).let { it.first.instances to it.second }
+
+    // readRevisioned with this read's committed/legacy provenance (#752).
+    fun readSnapshotRevisioned(legacy: () -> Map<PrototypeService, ProviderSetup>):
+        Pair<ProviderInstanceRegistrySnapshot, PrivateSecretRevision?> =
         locked {
             val read = store.readRevisioned()
-            readSnapshotUnlocked(legacy, read.plaintext).instances to
+            readSnapshotUnlocked(legacy, read.plaintext) to
                 read.revision?.takeIf { read.plaintext != null && it != PrivateSecretRevision.ABSENT }
         }
 

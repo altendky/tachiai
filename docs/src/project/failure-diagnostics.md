@@ -851,8 +851,8 @@ The account grant store, its revision checks and the renewal-successor rule are
 unchanged. Forget, rollback, account replacement, a route or profile change, and
 renewal adoption still take effect for the next request. The verdict is
 used by the main process's account binding (durable checks and account request
-gates) and by the viewer's per-request playback ownership checks. Other
-owner readers, such as catalogs and metadata runtimes, still read fully.
+gates) and by the viewer's per-request playback ownership checks. #752 extends it
+to the other repeated owner readers (below).
 
 Closed counters measure it. Each line covers at least a 30 s window and holds
 only fixed names, counts and milliseconds:
@@ -874,6 +874,67 @@ only fixed names, counts and milliseconds:
   and kept, or fully read and not kept.
 
 Capture `TachiaiStoreReads` together with the tags listed above.
+
+### Settings and remaining owner readers (#752) — 2026-11-26
+
+In the #745 emulator check, opening a provider's settings during playback made
+the main process read both stores fully 427 times in one 30 s window. The
+settings screens themselves read once when they resume. Compose code reads
+neither store. The reads came from the ABEMA catalog that the provider details
+screen loads. Its owner check read both stores twice on every call. It runs
+before each catalog request and publication, before and after every 8 KB read of
+a response, and in every My List and History gate. One channel-list fetch makes
+about 200 such checks.
+
+That catalog check now uses the #745 revision verdict, as do these readers:
+
+- Route startup's pool check, keyed by the captured pool's proof.
+- The approval browser's owner watch, which runs every second and on every
+  intercepted request. The browser's process also logs `TachiaiStoreReads`.
+- The metadata runtime's owner check.
+- The Twitch catalog connection's owner check. A committed all-System pool still
+  takes its one-record read (see below), now only when its registry record changes.
+
+The verdict rules are the #745 ones. A store change takes effect at the next
+check, and only a match is kept. A unit harness with 200 checks of one owner,
+each decryption costing 10 ms, shows the difference
+(`settingsCatalogFetchCostBeforeAndAfterRevisionVerdicts`):
+
+| | Instance decryptions | Profile decryptions | Time |
+| --- | --- | --- | --- |
+| Before | 400 | 400 | 8.4 s |
+| After | 2 | 2 | 0.05 s |
+
+The hit path still takes both locks, so each check now costs two short revision
+reads instead of four decryptions.
+
+Media admission splits into closed timings. The fields add to the lines above:
+
+- `media=ADMISSION_STATS`: `selection`, `route`, `account`, `availability`,
+  `premium` and `chase`. Each is the time of that step of a media request's
+  admission. `account` is the viewer's lease check.
+- `client=CHECK_STATS`: `lockWait` (waiting behind this feed's other lease
+  check), `sendHop` (the viewer's main looper before sending `CHECK`),
+  `dispatch` (sending until the reply wakes the worker), and `replyHop` (the
+  reply waiting for the viewer's main looper).
+- `owner=CHECK_STATS`: `receiveHop` (`CHECK` waiting for the main process's
+  main looper, which the settings screens also use), and `replyHop` (the
+  finished check waiting for it again before replying).
+
+Binder transit is the part of `dispatch` that the service's `receiveHop`,
+`queued`, `check` and `replyHop` don't cover.
+
+`FailureJournal` writes each record synchronously under a process lock and the
+journal's file lock. Each write rewrites the file and syncs it. At Stop, several
+loader threads and the viewer's main thread report at once, so they queue behind
+each other's syncs. That queue is the 0.2–1.6 s wait. Media3 interrupts a loader
+thread when it cancels its load, and an interrupted thread can't take the
+journal's interruptible file lock. That report then fails, and the reporter logs
+`event=JOURNAL_UNAVAILABLE` instead. A unit check confirmed it: an interrupted
+reporter's record is not written, and the fallback runs. The journal isn't
+changed here. Making interrupted callers wait for the lock would hold cancelled
+loaders, and release, behind that queue. Writing asynchronously could lose a
+record when a recovery restart ends the process.
 
 ## Replay resume loading — 2026-11-26
 
@@ -1038,6 +1099,12 @@ pool's selected System candidate does not qualify for the shortcut.
 
 This explicitly narrows the SYSTEM-only capture's within-call change-observation
 window; neither path is a cross-store atomic transaction or an ABA guarantee.
+
+Since #752 the connection's repeated owner checks keep a revision verdict, as
+described in [settings and remaining owner readers](#settings-and-remaining-owner-readers-752--2026-11-26).
+A check whose registry record (and, for an imported pool, profile record) is
+unchanged reuses the last matching owner. Any changed record runs one of the two
+captures above again. A legacy-derived view is never kept.
 Every media admission still performs fresh owner and durable grant checks before
 and after input reads, with unchanged exact expiry, Forget and caller-budget
 guards. The next gate observes a committed route change; an observed mismatch

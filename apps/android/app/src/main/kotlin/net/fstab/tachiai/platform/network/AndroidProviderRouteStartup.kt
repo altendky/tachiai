@@ -17,10 +17,14 @@ internal fun androidProviderRouteSwitchStartup(context: Context, pool: ProviderR
     val application = context.applicationContext
     val captured = pool.configuredInstance
     val deadline = Math.addExact(SystemClock.elapsedRealtime(), 45_000L)
+    // Each startup gate re-checks the pool (#752); unchanged store revisions
+    // keep its last matching verdict. Built on the first worker check.
+    val reads by lazy {
+        ProviderRouteOwnerReads(providerInstanceStore(application), connectionProfileStore(application),
+            { legacyProviderSettings(application) })
+    }
     return ProviderRouteStartup(pool, deadline, SystemClock::elapsedRealtime, isCurrent = {
-        captureProviderRoutePool(captured.id, captured.service,
-            { providerInstanceStore(application).read { legacyProviderSettings(application) } },
-            connectionProfileStore(application)::snapshot).proof == pool.proof
+        providerRoutePoolCurrent(reads, pool)
     }, onProgress = onProgress, canPublishLocally = { !ProviderStartupScopeCleanup.isPoisoned(captured.id) },
         skipRouteIdentities = skipRouteIdentities)
 }

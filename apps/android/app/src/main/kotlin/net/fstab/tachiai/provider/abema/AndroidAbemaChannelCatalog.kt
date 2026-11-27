@@ -66,6 +66,19 @@ internal fun abemaCatalogRouteOwnerRead(reads: ProviderRouteOwnerReads, captured
     } ?: checkNotNull(observed)
 }
 
+// The captured owner's proof while the stores still resolve to it, or null
+// (#752): a catalog's owner check through its revision verdicts.
+internal fun abemaCatalogOwnerProof(reads: ProviderRouteOwnerReads, captured: AbemaCatalogRouteOwner,
+    instanceId: String, expectedProof: String?): String? =
+    abemaCatalogRouteOwnerRead(reads, captured, instanceId, expectedProof).takeIf(captured::sameOwnership)?.proof()
+
+// Whether the stores still resolve to the candidate an approval request names
+// (#752). A mismatch throws or returns false, and only a match is kept.
+internal fun abemaRequestedOwnerCurrent(reads: ProviderRouteOwnerReads, instanceId: String, ownerProof: String): Boolean =
+    reads.current(instanceId to ownerProof) { instances, profiles ->
+        captureAbemaCatalogRouteOwner(instanceId, instances, profiles, ownerProof).proof().takeIf { it == ownerProof }
+    } != null
+
 // Protected owner reads run on workers, outside lifecycle locks. A successful
 // read cannot resurrect admission revoked while that read was in progress.
 internal fun abemaCatalogOwnerCurrent(canRemainActive: () -> Boolean, readOwnerMatches: () -> Boolean): Boolean =
@@ -84,13 +97,17 @@ internal fun androidAbemaChannelCatalog(context: Context, instanceId: String,
         { connectionProfileStore(application).snapshot(it) }, expected)
     val captured = runCatching { readOwner(expectedOwnerProof) }.onFailure { diagnostics.report(FailureStage.CATALOG_LOAD, it) }.getOrNull()
     val routeAdmission = ProviderRouteAdmission(captured?.proof() ?: expectedOwnerProof)
+    // Every catalog request, publication and account gate re-checks the
+    // captured owner (#752); unchanged store revisions keep its last verdict.
+    val ownerReads = ProviderRouteOwnerReads(providerInstanceStore(application), connectionProfileStore(application),
+        { legacyProviderSettings(application) })
     val lock = Any()
     var closed = false
     var cleanupFailed = false
     fun canRemainActive(): Boolean = canUse() && routeAdmission.canContinue() && !ProviderStartupScopeCleanup.isPoisoned(instanceId) &&
         !synchronized(lock) { closed || cleanupFailed }
     fun current(): Boolean = routeAdmission.check(::canRemainActive) { expected ->
-        if (captured == null) null else runCatching { readOwner(expected).takeIf(captured::sameOwnership)?.proof() }
+        if (captured == null) null else runCatching { abemaCatalogOwnerProof(ownerReads, captured, instanceId, expected) }
             .onFailure { diagnostics.report(FailureStage.CATALOG_LOAD, it) }.getOrNull()
     }
     startupObservation?.bindCurrent(::current)

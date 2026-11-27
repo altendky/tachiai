@@ -77,9 +77,12 @@ internal fun androidTwitchCatalogConnectionBinding(context: Context,
     AndroidPrivateSecretStore.removeRetiredTwitchRegistration(application)
     val diagnostics = FailureDiagnostics.create(application)
     // Retain wrappers and key handles only. Each reconciliation still reads
-    // the current encrypted files and performs fresh authenticated decryption.
+    // the current encrypted files. Every request, commit and maintenance gate
+    // re-checks the owner (#752): unchanged store revisions keep its last
+    // verdict, and any changed record is decrypted and reconciled afresh.
     val instances = providerInstanceStore(application, reuseReadKey = true)
     val profiles = connectionProfileStore(application, reuseReadKey = true)
+    val ownerReads = ProviderRouteOwnerReads(instances, profiles, { legacyProviderSettings(application) })
     class Snapshot(val presentation: TwitchCatalogConnectionOwner, val profile: ConnectionProfile?, val proof: String? = null)
     val routeAdmission = ProviderRouteAdmission(expectedOwnerProof)
     val sharedMaintenance = AtomicReference<TwitchCatalogMaintenanceRegistry.Handle?>()
@@ -90,10 +93,8 @@ internal fun androidTwitchCatalogConnectionBinding(context: Context,
         val matched = routeAdmission.check({ sharedMaintenance.get()?.canContinue() != false },
             readCancelled = { Thread.currentThread().isInterrupted }) { expected ->
             twitchCatalogOwnerProof({
-                captureTwitchCatalogSystemRegistryOwner(instanceId, instances,
-                    { legacyProviderSettings(application) },
-                    profiles::snapshot, expected,
-                    onInstanceObserved = displayInstance::set).also { resolved = it }.proof
+                twitchCatalogRouteOwnerRead(ownerReads, instanceId, expected, displayInstance::set)
+                    .also { resolved = it }.proof
             }, { error -> diagnostics.report(FailureStage.CATALOG_AUTH_OWNER, error) })
         }
         if (!routeAdmission.canContinue()) sharedMaintenance.get()?.revoke()

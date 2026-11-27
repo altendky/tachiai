@@ -1,7 +1,9 @@
 package net.fstab.tachiai.provider.twitch.catalog
 
+import net.fstab.tachiai.feature.connections.ProviderInstanceRegistrySnapshot
 import net.fstab.tachiai.feature.connections.ProviderInstanceStore
 import net.fstab.tachiai.platform.network.ConnectionProfile
+import net.fstab.tachiai.platform.network.ProviderRouteOwnerReads
 import net.fstab.tachiai.platform.network.providerRoutePoolSnapshot
 import net.fstab.tachiai.presentation.ProviderInstance
 import net.fstab.tachiai.presentation.ProviderSetup
@@ -15,9 +17,16 @@ import net.fstab.tachiai.presentation.validProviderInstanceId
 // This does not promise detection of every intervening change or ABA mutation.
 internal fun captureTwitchCatalogSystemRegistryOwner(instanceId: String, registry: ProviderInstanceStore,
     legacy: () -> Map<PrototypeService, ProviderSetup>, readProfiles: (Set<String>) -> Map<String, ConnectionProfile>,
+    expectedProof: String? = null, onInstanceObserved: (ProviderInstance) -> Unit = {}): TwitchCatalogRouteOwner =
+    captureTwitchCatalogSystemRegistryOwner(instanceId, { registry.readSnapshot(legacy) }, readProfiles,
+        expectedProof, onInstanceObserved)
+
+// readRegistry performs one actual locked registry read per call.
+internal fun captureTwitchCatalogSystemRegistryOwner(instanceId: String,
+    readRegistry: () -> ProviderInstanceRegistrySnapshot, readProfiles: (Set<String>) -> Map<String, ConnectionProfile>,
     expectedProof: String? = null, onInstanceObserved: (ProviderInstance) -> Unit = {}): TwitchCatalogRouteOwner {
     require(validProviderInstanceId(instanceId))
-    val first = registry.readSnapshot(legacy)
+    val first = readRegistry()
     val instance = first.instances.singleOrNull { it.id == instanceId && it.service == PrototypeService.TWITCH }
     if (first.committed && instance != null && instance.setup.routes.isNotEmpty() &&
         instance.setup.routes.all { it.mode == SourceRouteMode.SYSTEM && it.connectionId == null && it.connectionName == null }) {
@@ -29,6 +38,15 @@ internal fun captureTwitchCatalogSystemRegistryOwner(instanceId: String, registr
     // reads rather than adding a third registry read to imported/legacy paths.
     var consumed = false
     return captureTwitchCatalogRouteOwner(instanceId, {
-        if (!consumed) { consumed = true; first.instances } else registry.readSnapshot(legacy).instances
+        if (!consumed) { consumed = true; first.instances } else readRegistry().instances
     }, readProfiles, expectedProof, onInstanceObserved)
 }
+
+// The stores' current owner for this instance and expected proof, kept across
+// unchanged store revisions (#752). A hit observes no instance again; the
+// display instance last observed came from those same unchanged records.
+internal fun twitchCatalogRouteOwnerRead(reads: ProviderRouteOwnerReads, instanceId: String, expectedProof: String?,
+    onInstanceObserved: (ProviderInstance) -> Unit = {}): TwitchCatalogRouteOwner =
+    checkNotNull(reads.currentSnapshot(instanceId to expectedProof) { registry, profiles ->
+        captureTwitchCatalogSystemRegistryOwner(instanceId, registry, profiles, expectedProof, onInstanceObserved)
+    })

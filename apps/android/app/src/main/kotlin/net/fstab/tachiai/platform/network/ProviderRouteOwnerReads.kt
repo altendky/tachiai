@@ -1,5 +1,6 @@
 package net.fstab.tachiai.platform.network
 
+import net.fstab.tachiai.feature.connections.ProviderInstanceRegistrySnapshot
 import net.fstab.tachiai.feature.connections.ProviderInstanceStore
 import net.fstab.tachiai.platform.diagnostics.OperationStats
 import net.fstab.tachiai.platform.storage.PrivateSecretRevision
@@ -52,6 +53,12 @@ internal class ProviderRouteOwnerReads(
     private fun clear(held: Verdict?) = synchronized(lock) { if (held == null || verdict === held) verdict = null }
 
     fun <T : Any> current(key: Any, read: (readInstances: () -> List<ProviderInstance>,
+        readProfiles: (Set<String>) -> Map<String, ConnectionProfile>) -> T?): T? =
+        currentSnapshot(key) { registry, profiles -> read({ registry().instances }, profiles) }
+
+    // current, where read also sees each registry read's committed/legacy
+    // provenance (#752). A legacy view never names a revision, so it is never kept.
+    fun <T : Any> currentSnapshot(key: Any, read: (readRegistry: () -> ProviderInstanceRegistrySnapshot,
         readProfiles: (Set<String>) -> Map<String, ConnectionProfile>) -> T?): T? {
         val now = nowMs()
         val held = synchronized(lock) { verdict }?.takeIf { it.key == key && now >= it.atMs && now - it.atMs < maxAgeMs }
@@ -67,7 +74,7 @@ internal class ProviderRouteOwnerReads(
         val instanceReads = Revisions()
         val profileReads = Revisions()
         val value = try {
-            read({ instances.readRevisioned(legacy).also { instanceReads.record(it.second) }.first },
+            read({ instances.readSnapshotRevisioned(legacy).also { instanceReads.record(it.second) }.first },
                 { ids -> profiles.snapshotRevisioned(ids).also { profileReads.record(it.second) }.first })
         } catch (error: Throwable) { clear(null); throw error }
         val instanceRevision = instanceReads.revision
@@ -82,4 +89,13 @@ internal class ProviderRouteOwnerReads(
     }
 
     override fun toString() = "ProviderRouteOwnerReads(redacted)"
+}
+
+// Whether the stores still resolve to exactly this captured pool (#752). Only
+// a matching read is kept as a verdict; a mismatch or failed read is not.
+internal fun providerRoutePoolCurrent(reads: ProviderRouteOwnerReads, pool: ProviderRoutePoolSnapshot): Boolean {
+    val instance = pool.configuredInstance
+    return reads.current(pool.proof) { instances, profiles ->
+        captureProviderRoutePool(instance.id, instance.service, instances, profiles).proof.takeIf { it == pool.proof }
+    } != null
 }

@@ -82,6 +82,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
 import javax.net.ssl.HttpsURLConnection
+import net.fstab.tachiai.platform.diagnostics.OperationStats
 import net.fstab.tachiai.platform.diagnostics.FailureReporter
 import net.fstab.tachiai.platform.diagnostics.FailureCategory
 import net.fstab.tachiai.platform.diagnostics.FailureStage
@@ -267,12 +268,20 @@ internal class CachedPrototypeAbemaSession(
     private fun preparationAdmitted(run: Long) = preparationRefusal(run) == null
     private fun preparationCurrent(run: Long) = SystemClock.elapsedRealtime() < deadline && preparationAdmitted(run)
     private fun current(run: Long) = preparationCurrent(run) && routeCurrent.get()
-    private fun workerRefusal() = abemaBootstrapRefusal(
-        selection = { ownership?.checkWorker() != false },
-        route = { routeOwnership == null || routeOwnership === ownership || routeOwnership.checkWorker() },
-        account = { !accountAdmitted.get() || accountClient.get()?.checkWorker() == true },
-        availability = { playbackAvailability.get()?.current() != false },
-        premium = { slotPremiumCurrent(revision.get()) }, chase = { slotChaseCurrent(revision.get()) })
+    // parts, when given, receives each step's closed time (#752).
+    private fun workerRefusal(parts: OperationStats? = null): AbemaBootstrapRefusal? {
+        fun step(event: String, check: () -> Boolean): () -> Boolean = if (parts == null) check else ({
+            val began = SystemClock.elapsedRealtime()
+            try { check() } finally { runCatching { SystemClock.elapsedRealtime().let { parts.time(event, it - began, it) } } }
+        })
+        return abemaBootstrapRefusal(
+            selection = step("selection") { ownership?.checkWorker() != false },
+            route = step("route") { routeOwnership == null || routeOwnership === ownership || routeOwnership.checkWorker() },
+            account = step("account") { !accountAdmitted.get() || accountClient.get()?.checkWorker() == true },
+            availability = step("availability") { playbackAvailability.get()?.current() != false },
+            premium = step("premium") { slotPremiumCurrent(revision.get()) },
+            chase = step("chase") { slotChaseCurrent(revision.get()) })
+    }
     private fun workerOwned(): Boolean = workerRefusal() == null
     private fun reportBootstrapRefusal(stage: FailureStage, refusal: AbemaBootstrapRefusal?) {
         val category = when (refusal) {
@@ -314,7 +323,7 @@ internal class CachedPrototypeAbemaSession(
     private fun openConnection(url: URL): HttpsURLConnection {
         // Each media request's admission cost, as closed counters (#745).
         val admissionStarted = SystemClock.elapsedRealtime()
-        val admission = workerRefusal()
+        val admission = workerRefusal(AbemaAccountCheckStats.media)
         AbemaAccountCheckStats.record(AbemaAccountCheckStats.media, "admission", admissionStarted,
             SystemClock.elapsedRealtime(), admission == null)
         logAbemaCheckStats(AbemaAccountCheckStats.media, "TachiaiCachedAbema")

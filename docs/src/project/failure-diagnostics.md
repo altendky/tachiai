@@ -1217,7 +1217,7 @@ account, route or instance values:
 - Main process:
   - `owner=SESSION_END result=… waitedMs=…`, once per lease session. `result`
     is `CONFIRMED`, `JOBS_RUNNING`, `ATTACHMENT_UNCONFIRMED`, `INTERRUPTED`,
-    `CLOCK` or `REJECTED`.
+    `CLOCK`, `REJECTED` or `DEBUG_FAULT`.
   - `owner=INSTANCE_POISONED cause=SESSION_END|TRANSPORT_CLEANUP|ATTACH_ROLLBACK`
     when the main process poisons the instance.
   - `owner=TRANSPORT_POISONED stage=OPEN_ROLLBACK|TEARDOWN|CLOSE part=…` for the
@@ -1231,6 +1231,25 @@ check. Each ends with confirmed cleanup, an idle owner and a working next
 acquisition. Other tests cover the session end's wait: a validation that
 finishes after the old 5 s bound still confirms, while work that never
 finishes, a backward clock or an interruption does not.
+
+A poisoned account instance now reaches the existing Restart recovery instead
+of "could not be renewed" or "Connection unavailable". The ABEMA account code
+registers its poison with the startup cleanup gate (#764), so that gate
+reports `CLEANUP_UNCONFIRMED` for the instance:
+- Provider details and Manage streams show the #764/#767 notice, "Connection
+  cleanup could not be confirmed. Restart Tachiai before using this provider
+  again. Saved app data will be kept.", with its Restart.
+- ABEMA readiness reports `CLEANUP_UNCONFIRMED`. Watch and a feed's retry show
+  the same text, and the journal records `ABEMA_READINESS_CLEANUP_UNCONFIRMED`.
+
+A late finish still never clears the poison; only the main process's restart
+does. A quarantine source that throws counts as poisoned.
+
+Debug builds can force the account poison from the shell:
+`adb shell content call --uri content://net.fstab.tachiai.debug.startup-cleanup-fault --method account-poison-next`.
+The next lease session end in the main process is then reported as
+`DEBUG_FAULT` and poisons its instance. The real cleanup still runs. `clear`
+disarms it.
 
 ## Collecting one device's evidence
 

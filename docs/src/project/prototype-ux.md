@@ -184,12 +184,17 @@ phone and TV. Debug builds can force this state from the shell:
 
 ```text
 adb shell content call --uri content://net.fstab.tachiai.debug.startup-cleanup-fault --method poison-next
+adb shell content call --uri content://net.fstab.tachiai.debug.startup-cleanup-fault --method account-poison-next
 adb shell content call --uri content://net.fstab.tachiai.debug.startup-cleanup-fault --method clear
 ```
 
 `poison-next` makes the next startup scope retired in the main process (for
 example, by leaving provider details) block its provider, as an unconfirmed
-cleanup would. The real scope still closes normally. `clear` only disarms a
+cleanup would. The real scope still closes normally. `account-poison-next`
+reports the next ABEMA lease session end in the main process as unconfirmed,
+which poisons that account instance
+([#783](https://github.com/altendky/tachiai/issues/783)); provider details,
+Manage streams and Watch then show the same notice. `clear` only disarms a
 pending fault. Like the route fault trigger, it requires `DUMP`, accepts only
 the shell or root UID, is disabled in the inspection build, and is absent from
 release builds.

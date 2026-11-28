@@ -13,7 +13,9 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]
 tachiai-core.workspace = true
-uniffi.workspace = true
+# The workspace disables UniFFI defaults; without macro scaffolding the export
+# macros emit no symbols or metadata and generated bindings lose this API.
+uniffi = { workspace = true, features = ["macro-scaffolding"] }
 
 [lints]
 workspace = true

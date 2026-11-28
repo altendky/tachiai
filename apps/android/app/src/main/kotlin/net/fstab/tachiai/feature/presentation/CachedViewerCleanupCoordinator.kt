@@ -1,8 +1,25 @@
 package net.fstab.tachiai.feature.presentation
 
 import java.util.concurrent.Executor
+import net.fstab.tachiai.platform.diagnostics.FailureCategory
 import net.fstab.tachiai.platform.diagnostics.FailureReporter
 import net.fstab.tachiai.platform.diagnostics.FailureStage
+
+// The first step that left a cached viewer run's cleanup unconfirmed (#783),
+// as one closed cause for logs and the failure journal.
+internal enum class ViewerCleanupCause(val category: FailureCategory) {
+    CANCEL_PREPARATION(FailureCategory.VIEWER_CLEANUP_CANCEL_PREPARATION),
+    PREPARATION_UNCONFIRMED(FailureCategory.VIEWER_CLEANUP_PREPARATION_UNCONFIRMED),
+    FEED_CLOSE(FailureCategory.VIEWER_CLEANUP_FEED_CLOSE),
+    FEED_KNOWN_FAILED(FailureCategory.VIEWER_CLEANUP_FEED_KNOWN_FAILED),
+    FEED_UNCONFIRMED(FailureCategory.VIEWER_CLEANUP_FEED_UNCONFIRMED),
+    HELPER_DESTROY(FailureCategory.VIEWER_CLEANUP_HELPER_DESTROY),
+    HELPER_UNCONFIRMED(FailureCategory.VIEWER_CLEANUP_HELPER_UNCONFIRMED),
+    ROUTE_RETIRE(FailureCategory.VIEWER_CLEANUP_ROUTE_RETIRE),
+    ROUTE_CLOSE(FailureCategory.VIEWER_CLEANUP_ROUTE_CLOSE),
+    PROXY_CLEAR(FailureCategory.VIEWER_CLEANUP_PROXY_CLEAR),
+    TIMEOUT(FailureCategory.VIEWER_CLEANUP_TIMEOUT),
+}
 
 // One process owner, independent of Activity lifetime. All state transitions
 // happen on main; workers may only register resources or close captured routes.
@@ -12,6 +29,8 @@ internal class CachedViewerCleanupCoordinator(
     private val closeWorker: Executor,
     private val clearProxy: (FailureReporter, () -> Unit) -> Unit,
     private val changed: () -> Unit,
+    // Called once per run with its first unconfirmed cause (#783).
+    private val unconfirmed: (ViewerCleanupCause) -> Unit = {},
 ) {
     internal class Feed(val resource: AutoCloseable, val confirmed: () -> Boolean, val pending: () -> Boolean,
         val knownFailed: () -> Boolean) {
@@ -35,6 +54,7 @@ internal class CachedViewerCleanupCoordinator(
         internal var feedClosesInProgress = 0
         internal var cleanupFailed = false
         internal var failureStage: FailureStage? = null
+        internal var firstCause: ViewerCleanupCause? = null
         override fun toString() = "CachedViewerRun(status only)"
     }
 
@@ -71,7 +91,7 @@ internal class CachedViewerCleanupCoordinator(
     fun prepared(run: Run, confirmed: Boolean) {
         if (owned !== run) return
         run.producerFinished = true
-        if (!confirmed) poison(run, FailureStage.ROUTE_CANCEL_UNCONFIRMED)
+        if (!confirmed) poison(run, FailureStage.ROUTE_CANCEL_UNCONFIRMED, ViewerCleanupCause.PREPARATION_UNCONFIRMED)
         else advance(run)
     }
     // #271: a playback route switch is another producer within the active run.
@@ -87,7 +107,7 @@ internal class CachedViewerCleanupCoordinator(
         if (owned !== run) return
         if (confirmed) synchronized(run.routes) { run.routes.removeAll { it === route } }
         else {
-            run.cleanupFailed = true
+            failed(run, ViewerCleanupCause.ROUTE_RETIRE)
             if (run.phase == Run.Phase.ACTIVE) end(run) else poison(run, FailureStage.ROUTE_CLOSE)
         }
     }
@@ -97,7 +117,7 @@ internal class CachedViewerCleanupCoordinator(
         val accepted = closeFeed(run, entry)
         // Keep an uncertain consumer strongly owned even after UI detachment.
         if (!accepted) {
-            run.cleanupFailed = true
+            failed(run, closeCause(entry))
             end(run)
         }
         if (run.phase == Run.Phase.ENDING) finishFeeds(run)
@@ -119,13 +139,13 @@ internal class CachedViewerCleanupCoordinator(
         if (run.phase == Run.Phase.ACTIVE) {
             val ownedFeeds = feeds(run)
             val completed = ownedFeeds.filter { it.attempted && !runCatching(it.pending).getOrDefault(true) }
-            if (ownedFeeds.any { runCatching(it.knownFailed).getOrDefault(true) } ||
-                completed.any { !runCatching(it.confirmed).getOrDefault(false) }) {
-                run.cleanupFailed = true; end(run)
+            val known = ownedFeeds.any { runCatching(it.knownFailed).getOrDefault(true) }
+            if (known || completed.any { !runCatching(it.confirmed).getOrDefault(false) }) {
+                failed(run, if (known) ViewerCleanupCause.FEED_KNOWN_FAILED else ViewerCleanupCause.FEED_UNCONFIRMED); end(run)
             }
         } else if (run.phase == Run.Phase.ENDING) finishFeeds(run)
         else if (run.phase in setOf(Run.Phase.CLEARING, Run.Phase.CLOSING) && !consumersConfirmed(feeds(run)))
-            poison(run, FailureStage.FEED_CLEANUP_UNCONFIRMED)
+            poison(run, FailureStage.FEED_CLEANUP_UNCONFIRMED, consumersCause(feeds(run)))
     }
     private fun closeFeed(run: Run, entry: Feed): Boolean {
         if (!entry.attempted) {
@@ -143,8 +163,9 @@ internal class CachedViewerCleanupCoordinator(
         run.phase = Run.Phase.ENDING
         changed()
         delay(20_000) { if (owned === run && run.phase !in setOf(Run.Phase.FINISHED, Run.Phase.POISONED))
-            poison(run, FailureStage.ROUTE_CLEAR_TIMEOUT) }
-        if (!runCatching { run.cancelPreparation?.invoke() ?: true }.getOrDefault(false)) run.cleanupFailed = true
+            poison(run, FailureStage.ROUTE_CLEAR_TIMEOUT, ViewerCleanupCause.TIMEOUT) }
+        if (!runCatching { run.cancelPreparation?.invoke() ?: true }.getOrDefault(false))
+            failed(run, ViewerCleanupCause.CANCEL_PREPARATION)
         finishFeeds(run)
     }
     private fun finishFeeds(run: Run) {
@@ -153,7 +174,7 @@ internal class CachedViewerCleanupCoordinator(
         if (owned !== run || run.phase != Run.Phase.ENDING || run.feedsClosed || run.feedClosesInProgress != 0) return
         feeds(run).forEach { entry ->
             val accepted = closeFeed(run, entry)
-            if (!runCatching(entry.pending).getOrDefault(true) && !accepted) run.cleanupFailed = true
+            if (!runCatching(entry.pending).getOrDefault(true) && !accepted) failed(run, closeCause(entry))
         }
         if (feeds(run).any { runCatching(it.pending).getOrDefault(true) }) return
         var destroyed = true
@@ -161,7 +182,8 @@ internal class CachedViewerCleanupCoordinator(
             if (!run.diagnostics.cleanupAll(FailureStage.WEBVIEW_DESTROY) {
                 if (!helper.destroy()) destroyed = false
             }) destroyed = false
-            if (!runCatching(helper.confirmed).getOrDefault(false)) run.cleanupFailed = true
+            if (!destroyed) failed(run, ViewerCleanupCause.HELPER_DESTROY)
+            if (!runCatching(helper.confirmed).getOrDefault(false)) failed(run, ViewerCleanupCause.HELPER_UNCONFIRMED)
         }
         run.feedsClosed = true
         if (!destroyed || run.cleanupFailed) poison(run, FailureStage.FEED_CLEANUP_UNCONFIRMED)
@@ -169,17 +191,19 @@ internal class CachedViewerCleanupCoordinator(
     }
     private fun advance(run: Run) {
         if (owned !== run || run.phase != Run.Phase.ENDING || !run.producerFinished || !run.feedsClosed) return
-        if (!consumersConfirmed(feeds(run))) { poison(run, FailureStage.FEED_CLEANUP_UNCONFIRMED); return }
+        if (!consumersConfirmed(feeds(run))) { poison(run, FailureStage.FEED_CLEANUP_UNCONFIRMED, consumersCause(feeds(run))); return }
         if (!run.proxyTouched) { closeRoutes(run); return }
         run.phase = Run.Phase.CLEARING
         delay(3_000) { if (owned === run && run.phase == Run.Phase.CLEARING)
-            poison(run, FailureStage.ROUTE_CLEAR_TIMEOUT) }
+            poison(run, FailureStage.ROUTE_CLEAR_TIMEOUT, ViewerCleanupCause.TIMEOUT) }
         try {
             clearProxy(run.diagnostics) {
                 // Late acknowledgment is not permission to reopen poisoned admission.
                 if (owned === run && run.phase == Run.Phase.CLEARING) closeRoutes(run)
             }
-        } catch (error: Throwable) { run.diagnostics.report(FailureStage.WEB_ROUTE_CLEAR, error); poison(run) }
+        } catch (error: Throwable) {
+            run.diagnostics.report(FailureStage.WEB_ROUTE_CLEAR, error); poison(run, cause = ViewerCleanupCause.PROXY_CLEAR)
+        }
     }
     private fun consumersConfirmed(feeds: List<Feed>) = feeds.all {
         !runCatching(it.knownFailed).getOrDefault(true) && !runCatching(it.pending).getOrDefault(true) &&
@@ -187,7 +211,7 @@ internal class CachedViewerCleanupCoordinator(
     }
     private fun closeRoutes(run: Run) {
         val feeds = feeds(run)
-        if (!consumersConfirmed(feeds)) { poison(run, FailureStage.FEED_CLEANUP_UNCONFIRMED); return }
+        if (!consumersConfirmed(feeds)) { poison(run, FailureStage.FEED_CLEANUP_UNCONFIRMED, consumersCause(feeds)); return }
         run.phase = Run.Phase.CLOSING
         val routes = synchronized(run.routes) { run.routes.toList() }
         try { closeWorker.execute {
@@ -204,16 +228,36 @@ internal class CachedViewerCleanupCoordinator(
                         run.cancelPreparation = null
                         owned = null
                         changed()
-                    } else poison(run, FailureStage.ROUTE_CLOSE)
+                    } else poison(run, FailureStage.ROUTE_CLOSE,
+                        if (accepted) consumersCause(feeds) else ViewerCleanupCause.ROUTE_CLOSE)
                 }
             }
-        } } catch (error: Throwable) { run.diagnostics.report(FailureStage.ROUTE_CLOSE, error); poison(run) }
+        } } catch (error: Throwable) {
+            run.diagnostics.report(FailureStage.ROUTE_CLOSE, error); poison(run, cause = ViewerCleanupCause.ROUTE_CLOSE)
+        }
     }
-    private fun poison(run: Run, stage: FailureStage? = null) {
+    // Remembers the run's first unconfirmed cause; the flag itself is unchanged.
+    private fun failed(run: Run, cause: ViewerCleanupCause) {
+        run.cleanupFailed = true
+        if (run.firstCause == null) run.firstCause = cause
+    }
+    private fun closeCause(entry: Feed): ViewerCleanupCause = when {
+        !entry.accepted -> ViewerCleanupCause.FEED_CLOSE
+        runCatching(entry.knownFailed).getOrDefault(true) -> ViewerCleanupCause.FEED_KNOWN_FAILED
+        else -> ViewerCleanupCause.FEED_UNCONFIRMED
+    }
+    private fun consumersCause(feeds: List<Feed>): ViewerCleanupCause =
+        if (feeds.any { runCatching(it.knownFailed).getOrDefault(true) }) ViewerCleanupCause.FEED_KNOWN_FAILED
+        else ViewerCleanupCause.FEED_UNCONFIRMED
+    private fun poison(run: Run, stage: FailureStage? = null, cause: ViewerCleanupCause? = null) {
         if (owned !== run || run.phase in setOf(Run.Phase.FINISHED, Run.Phase.POISONED)) return
         run.failureStage = stage
         run.phase = Run.Phase.POISONED
-        stage?.let { run.diagnostics.report(it) }
+        if (run.firstCause == null) run.firstCause = cause
+        val first = run.firstCause
+        // The first cause travels as the poison record's category (#783).
+        stage?.let { if (first != null) run.diagnostics.reportCategory(it, first.category) else run.diagnostics.report(it) }
+        first?.let { runCatching { unconfirmed(it) } }
         changed()
     }
 }

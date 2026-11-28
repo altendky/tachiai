@@ -201,8 +201,18 @@ internal class CachedPrototypeAbemaSession(
     val cleanupPending get() = worker.pending || hostWorker.pending || accountCleanupPending.get() || slotProfileCleanupPending.get() ||
         transportCancellationPending.get() || nativeCleanup?.pending == true ||
         (closed.get() && (!transportFinalized.get() || !helperFinalized.get()))
-    private val transportCleanup = net.fstab.tachiai.platform.media.NativeCleanupReceipt { cleanupFailed = true; onCleanupChanged() }
+    private val transportCleanup = net.fstab.tachiai.platform.media.NativeCleanupReceipt { failCleanup(CachedCleanupPart.TRANSPORT_RECEIPT); onCleanupChanged() }
     @Volatile private var nativeCleanup: net.fstab.tachiai.platform.media.NativeCleanupReceipt? = null
+    // The first part of this feed's cleanup that was not confirmed (#783),
+    // logged and journaled once with a closed name only.
+    private val firstCleanupPart = AtomicReference<CachedCleanupPart?>()
+    private fun failCleanup(part: CachedCleanupPart) {
+        cleanupFailed = true
+        if (firstCleanupPart.compareAndSet(null, part)) runCatching {
+            android.util.Log.d("TachiaiCachedAbema", cachedCleanupLine(part))
+            diagnostics.reportCategory(FailureStage.CACHED_ABEMA_CLEANUP, part.category)
+        }
+    }
     private val closed = AtomicBoolean(false)
     private val networkReviewNeeded = AtomicBoolean(false)
     private val cdnJournal = AbemaCdnReviewJournal(File(context.noBackupFilesDir, "abema-cdn-review.tsv"))
@@ -531,7 +541,7 @@ internal class CachedPrototypeAbemaSession(
                 canRun = { preparationCurrent(run) && SystemClock.elapsedRealtime() < readinessDeadline },
                 identity = identity,
                 open = { url -> transportCleanup.allocate(10, { openConnection(url) }) { it.disconnect() } },
-                onFailure = { transportCleanup.failed(); cleanupFailed = true; diagnostics.report(FailureStage.BUNDLE_DISCONNECT, it) },
+                onFailure = { transportCleanup.failed(); failCleanup(CachedCleanupPart.BUNDLE_DISCONNECT); diagnostics.report(FailureStage.BUNDLE_DISCONNECT, it) },
                 openInput = { request -> transportCleanup.input { request.inputStream } },
             )
             bundleTransport.set(http)
@@ -541,7 +551,7 @@ internal class CachedPrototypeAbemaSession(
                     .prepare(http::fetch)
             } finally {
                 try { http.close(); bundleTransport.compareAndSet(http, null) }
-                catch (error: Throwable) { cleanupFailed = true; throw error }
+                catch (error: Throwable) { failCleanup(CachedCleanupPart.BUNDLE_CLOSE); throw error }
             }
         }
         // Before its account arrives a deferred host holds no account data, so
@@ -674,7 +684,7 @@ internal class CachedPrototypeAbemaSession(
                                     slotProfile.set(profile)
                                 }
                                 val subscription = try { profile.read(grant.userId, grant.bearer) }
-                                finally { if (!profile.cleanupConfirmed) cleanupFailed = true }
+                                finally { if (!profile.cleanupConfirmed) failCleanup(CachedCleanupPart.SLOT_PROFILE_READ) }
                                 if (subscription !is AbemaSubscriptionProfileResult.Identity || subscription.id != grant.userId ||
                                     !preparationCurrent(run) || !client.checkWorker() || !selectedOwner.checkWorker())
                                     throw AbemaAccountException(AbemaAccountFailure.NOT_VERIFIED)
@@ -858,7 +868,7 @@ internal class CachedPrototypeAbemaSession(
                     openInput = { request -> transportCleanup.input { request.inputStream } },
                     openErrorInput = { request -> transportCleanup.optionalInput { request.errorStream } },
                     onFailure = { stage, error ->
-                        if (stage == NativeFailureStage.MEDIA_DISCONNECT) { transportCleanup.failed(); cleanupFailed = true }
+                        if (stage == NativeFailureStage.MEDIA_DISCONNECT) { transportCleanup.failed(); failCleanup(CachedCleanupPart.SOURCE_DISCONNECT) }
                         diagnostics.nativeObserver()(stage, error)
                     }, transportObserver = diagnostics.nativeTransportObserver())
                 sourceRequests.set(requests)
@@ -866,7 +876,7 @@ internal class CachedPrototypeAbemaSession(
                 val source = try { readSource(uri, requests) }
                 finally {
                     try { requests.close(); sourceRequests.compareAndSet(requests, null) }
-                    catch (error: Throwable) { cleanupFailed = true; throw error }
+                    catch (error: Throwable) { failCleanup(CachedCleanupPart.SOURCE_CLOSE); throw error }
                 }
                 nativePreparationEvidence.observe(AbemaNativePreparationPhase.SOURCE_RECHECK, current(run))
                 check(current(run) && workerOwned() && selectedSource(run, minOf(deadline, SystemClock.elapsedRealtime() + 10_000)) == uri)
@@ -1016,7 +1026,7 @@ internal class CachedPrototypeAbemaSession(
                 liveCache = liveCache,
                 onCleanupOwner = { nativeCleanup = it },
                 onCleanupChanged = ::nativeCleanupChanged,
-                onCleanupUnconfirmed = { cleanupFailed = true; onCleanupChanged() }) }
+                onCleanupUnconfirmed = { failCleanup(CachedCleanupPart.NATIVE_RECEIPT); onCleanupChanged() }) }
             nativeHost = created
             nativePreparationEvidence.observe(AbemaNativePreparationPhase.HOST_CREATED, true)
             created.start(source.uri, playWhenReady = false)
@@ -1270,7 +1280,7 @@ internal class CachedPrototypeAbemaSession(
 
     private fun nativeCleanupChanged() {
         if (Looper.myLooper() != Looper.getMainLooper()) {
-            if (!handler.post(::nativeCleanupChanged)) { cleanupFailed = true; onCleanupChanged() }
+            if (!handler.post(::nativeCleanupChanged)) { failCleanup(CachedCleanupPart.NATIVE_DISPATCH); onCleanupChanged() }
             return
         }
         if (nativeCleanup?.confirmed == true) nativeHost = null
@@ -1298,7 +1308,7 @@ internal class CachedPrototypeAbemaSession(
                             val owned = sourceRequests.get(); owned?.close(); sourceRequests.compareAndSet(owned, null)
                         },
                     )) {
-                        if (!diagnostics.cleanupAll(stage, close)) cleanupFailed = true
+                        if (!diagnostics.cleanupAll(stage, close)) failCleanup(CachedCleanupPart.TRANSPORT_CANCEL)
                     }
                 } finally {
                     transportCancellationPending.set(false)
@@ -1307,7 +1317,7 @@ internal class CachedPrototypeAbemaSession(
                 }
             }
         } catch (error: Throwable) {
-            cleanupFailed = true
+            failCleanup(CachedCleanupPart.TRANSPORT_CANCEL_REJECTED)
             transportCancellationPending.set(false)
             diagnostics.report(FailureStage.SOURCE_REQUESTS_CLOSE, error)
         }
@@ -1319,7 +1329,7 @@ internal class CachedPrototypeAbemaSession(
         if (!closed.get() || !cleanupSetupComplete.get() || worker.pending || hostWorker.pending || accountCleanupPending.get() ||
             slotProfileCleanupPending.get() || transportCancellationPending.get() || nativeCleanup?.pending == true ||
             !transportFinalizing.compareAndSet(false, true)) return
-        if (slotProfile.get()?.cleanupConfirmed == false) cleanupFailed = true
+        if (slotProfile.get()?.cleanupConfirmed == false) failCleanup(CachedCleanupPart.SLOT_PROFILE_FINAL)
         try {
             transportCleanup.closeAsync(cleanupExecutor, Executor { task ->
                 if (Looper.myLooper() == Looper.getMainLooper()) task.run()
@@ -1329,11 +1339,11 @@ internal class CachedPrototypeAbemaSession(
                 finishHelperCleanup()
                 onCleanupChanged()
             }, onFailure = { error ->
-                cleanupFailed = true
+                failCleanup(CachedCleanupPart.TRANSPORT_CLOSE)
                 diagnostics.report(FailureStage.SOURCE_REQUESTS_CLOSE, error)
             })
         } catch (error: Throwable) {
-            cleanupFailed = true
+            failCleanup(CachedCleanupPart.TRANSPORT_CLOSE_REJECTED)
             transportFinalized.set(true)
             diagnostics.report(FailureStage.SOURCE_REQUESTS_CLOSE, error)
             finishHelperCleanup()
@@ -1345,11 +1355,11 @@ internal class CachedPrototypeAbemaSession(
         if (!closed.get() || !cleanupSetupComplete.get() || !transportFinalized.get() ||
             nativeCleanup?.pending == true || helperFinalized.get()) return
         if (Looper.myLooper() != Looper.getMainLooper()) {
-            if (!handler.post(::finishHelperCleanup)) { cleanupFailed = true; helperFinalized.set(true); onCleanupChanged() }
+            if (!handler.post(::finishHelperCleanup)) { failCleanup(CachedCleanupPart.HELPER_DISPATCH); helperFinalized.set(true); onCleanupChanged() }
             return
         }
         try {
-            if (!ViewerMainSteps.time("helperDestroy") { helperCleanup.destroy() } || helperCleanup.cleanupFailed) cleanupFailed = true
+            if (!ViewerMainSteps.time("helperDestroy") { helperCleanup.destroy() } || helperCleanup.cleanupFailed) failCleanup(CachedCleanupPart.HELPER_DESTROY)
         } finally { helperFinalized.set(true); onCleanupChanged() }
     }
 
@@ -1372,20 +1382,20 @@ internal class CachedPrototypeAbemaSession(
                     finally { slotProfileCleanupPending.set(false); finishTransportCleanup(); onCleanupChanged() }
                 }
             } catch (error: Throwable) {
-                cleanupFailed = true; slotProfileCleanupPending.set(false)
+                failCleanup(CachedCleanupPart.SLOT_PROFILE_CANCEL_REJECTED); slotProfileCleanupPending.set(false)
                 diagnostics.report(FailureStage.CATALOG_AUTH_CLEANUP, error)
             }
         }
         accountClient.get()?.let { client ->
             try {
                 accountCleanup.execute {
-                    try { if (!client.awaitCleanup()) cleanupFailed = true }
+                    try { if (!client.awaitCleanup()) failCleanup(CachedCleanupPart.ACCOUNT_CLIENT) }
                     finally { accountCleanupPending.set(false); finishTransportCleanup(); onCleanupChanged() }
                 }
             } catch (error: Throwable) {
                 // Continue every local teardown stage while retaining this
                 // unconfirmed client with the failed session/coordinator.
-                cleanupFailed = true; accountCleanupPending.set(false)
+                failCleanup(CachedCleanupPart.ACCOUNT_CLEANUP_REJECTED); accountCleanupPending.set(false)
                 diagnostics.report(FailureStage.CATALOG_AUTH_CLEANUP, error)
             }
         }
@@ -1409,10 +1419,35 @@ internal class CachedPrototypeAbemaSession(
             FailureStage.WORKER_SHUTDOWN to { worker.shutdownNow() },
             FailureStage.WORKER_SHUTDOWN to { hostWorker.shutdownNow() },
         )) {
-            if (!diagnostics.cleanupAll(stage, cleanup)) cleanupFailed = true
+            if (!diagnostics.cleanupAll(stage, cleanup)) failCleanup(CachedCleanupPart.FINISH_STAGE)
         }
         cleanupSetupComplete.set(true)
         finishTransportCleanup()
         emit(event)
     }
 }
+
+// Each part of a cached ABEMA feed's cleanup that can leave it unconfirmed (#783).
+internal enum class CachedCleanupPart(val category: FailureCategory) {
+    TRANSPORT_RECEIPT(FailureCategory.CACHED_CLEANUP_TRANSPORT_RECEIPT),
+    BUNDLE_DISCONNECT(FailureCategory.CACHED_CLEANUP_BUNDLE_DISCONNECT),
+    BUNDLE_CLOSE(FailureCategory.CACHED_CLEANUP_BUNDLE_CLOSE),
+    SLOT_PROFILE_READ(FailureCategory.CACHED_CLEANUP_SLOT_PROFILE_READ),
+    SLOT_PROFILE_FINAL(FailureCategory.CACHED_CLEANUP_SLOT_PROFILE_FINAL),
+    SLOT_PROFILE_CANCEL_REJECTED(FailureCategory.CACHED_CLEANUP_SLOT_PROFILE_CANCEL_REJECTED),
+    SOURCE_DISCONNECT(FailureCategory.CACHED_CLEANUP_SOURCE_DISCONNECT),
+    SOURCE_CLOSE(FailureCategory.CACHED_CLEANUP_SOURCE_CLOSE),
+    NATIVE_RECEIPT(FailureCategory.CACHED_CLEANUP_NATIVE_RECEIPT),
+    NATIVE_DISPATCH(FailureCategory.CACHED_CLEANUP_NATIVE_DISPATCH),
+    TRANSPORT_CANCEL(FailureCategory.CACHED_CLEANUP_TRANSPORT_CANCEL),
+    TRANSPORT_CANCEL_REJECTED(FailureCategory.CACHED_CLEANUP_TRANSPORT_CANCEL_REJECTED),
+    TRANSPORT_CLOSE(FailureCategory.CACHED_CLEANUP_TRANSPORT_CLOSE),
+    TRANSPORT_CLOSE_REJECTED(FailureCategory.CACHED_CLEANUP_TRANSPORT_CLOSE_REJECTED),
+    HELPER_DISPATCH(FailureCategory.CACHED_CLEANUP_HELPER_DISPATCH),
+    HELPER_DESTROY(FailureCategory.CACHED_CLEANUP_HELPER_DESTROY),
+    ACCOUNT_CLIENT(FailureCategory.CACHED_CLEANUP_ACCOUNT_CLIENT),
+    ACCOUNT_CLEANUP_REJECTED(FailureCategory.CACHED_CLEANUP_ACCOUNT_CLEANUP_REJECTED),
+    FINISH_STAGE(FailureCategory.CACHED_CLEANUP_FINISH_STAGE),
+}
+
+internal fun cachedCleanupLine(part: CachedCleanupPart) = "cachedCleanup=UNCONFIRMED part=${part.name}"

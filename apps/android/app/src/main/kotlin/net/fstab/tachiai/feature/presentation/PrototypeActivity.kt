@@ -244,6 +244,8 @@ open class PrototypeActivity : ComponentActivity() {
                 }
                 recoveryState.notifyChanged()
             },
+            // A closed first cause only (#783); the record goes to the journal too.
+            unconfirmed = { cause -> Log.d("TachiaiPrototype", "viewerCleanup=UNCONFIRMED cause=${cause.name}") },
         ) }
     }
     protected open val useCachedAbema: Boolean = true

@@ -1331,6 +1331,49 @@ The next lease session end in the main process is then reported as
 `DEBUG_FAULT` and poisons its instance. The real cleanup still runs. `clear`
 disarms it.
 
+On the emulator after this change, 1 of 16 early Stops still ended in "Playback
+recovery required". Every lease end for that Stop confirmed, but the viewer
+journaled `FEED_CLEANUP_UNCONFIRMED` 0.4 s after the Stop with no earlier
+cause. Several parts of a cached ABEMA feed's cleanup had set its failure flag
+without recording anything. Each now names itself once:
+
+- Logcat: `cachedCleanup=UNCONFIRMED part=…` under `TachiaiCachedAbema`.
+- Journal: stage `CACHED_ABEMA_CLEANUP`, category `CACHED_CLEANUP_<part>`.
+
+The parts are the session's native transport receipt; the bundle and source
+request disconnects and closes; the configured slot's subscription-profile read
+(`SLOT_PROFILE_READ`, `SLOT_PROFILE_FINAL`, `SLOT_PROFILE_CANCEL_REJECTED`);
+the native player receipt and its dispatch; the transport cancellation and final
+close; the helper's dispatch and destroy; the account lease client; and any
+`finish` stage.
+
+The viewer's cleanup coordinator also keeps the run's first cause. It journals
+that cause as the category of the poison record, such as
+`FEED_CLEANUP_UNCONFIRMED` with `VIEWER_CLEANUP_FEED_KNOWN_FAILED`, and logs it
+as `viewerCleanup=UNCONFIRMED cause=…` under `TachiaiPrototype`. The causes are
+`CANCEL_PREPARATION`, `PREPARATION_UNCONFIRMED`, `FEED_CLOSE`,
+`FEED_KNOWN_FAILED`, `FEED_UNCONFIRMED`, `HELPER_DESTROY`, `HELPER_UNCONFIRMED`,
+`ROUTE_RETIRE`, `ROUTE_CLOSE`, `PROXY_CLEAR` and `TIMEOUT`.
+
+An account HTTP connection whose close isn't confirmed logs
+`accountHttp=CLEANUP_UNCONFIRMED stream=… disconnect=…`. Each half is `OK`,
+`NONE` (no body stream), `THREW`, `TIMEOUT`, `REJECTED` (its cleanup thread
+refused the task) or `REENTRANT`.
+
+On the next emulator run, these lines named the cause on the fourth early
+Stop: `accountHttp=CLEANUP_UNCONFIRMED stream=REJECTED disconnect=REJECTED`,
+then `cachedCleanup=UNCONFIRMED part=SLOT_PROFILE_READ` and
+`viewerCleanup=UNCONFIRMED cause=FEED_KNOWN_FAILED`. Both feeds were configured
+slots, and both were reading their subscription profile when the Stop came.
+Their two connection closes each start a stream close and a disconnect
+together, because the stream close can block until the disconnect runs. The
+process-wide cleanup pool had 2 threads and a 2-task queue, so it refused the
+extra closes, and a refused close counts as unconfirmed.
+
+That pool now runs every close at once on its own thread, with no queue, up to
+32 running together. A close beyond that limit, or one that throws or times
+out, still fails closed.
+
 ## Collecting one device's evidence
 
 Verify the requested device before collecting. For the persistent emulator,

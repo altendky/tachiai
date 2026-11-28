@@ -55,13 +55,37 @@ class CollectionEpisodesPageTest {
         override fun selectGroup(source: ConfiguredSource, group: String) { calls += "group:$group"; current = pages.getValue(group) }
     }
 
-    @Composable private fun Picker(episodes: Episodes, television: Boolean, onWatch: (ConfiguredFeedAssignments) -> Unit) {
+    @Composable private fun Picker(episodes: Episodes, television: Boolean, covered: Boolean = false,
+        initialAssignments: ConfiguredFeedAssignments = ConfiguredFeedAssignments(null, null),
+        onAssignmentsChanged: (ConfiguredFeedAssignments) -> Unit = {}, onWatch: (ConfiguredFeedAssignments) -> Unit) {
         val input = LocalInputModeManager.current
         if (television) SideEffect { input.requestInputMode(InputMode.Keyboard) }
         TachiaiPrototypeTheme(television = television) {
             PrototypeSourcePicker(null, providerInstances = listOf(provider), configuredSources = listOf(series),
-                initialAssignments = ConfiguredFeedAssignments(null, null), episodes = episodes, onWatch = onWatch)
+                initialAssignments = initialAssignments, onAssignmentsChanged = onAssignmentsChanged,
+                episodes = episodes, covered = covered, onWatch = onWatch)
         }
+    }
+
+    // #790: the viewer covers the kept picker. That closes the Episodes page, so
+    // it neither loads nor takes Back behind the viewer, and the picker returns
+    // to its list, as a new picker did, with the Activity's assignments.
+    @Test fun coveringClosesTheEpisodesPageAndUncoveringShowsTheListWithItsAssignments() {
+        val episodes = Episodes()
+        var assignments by mutableStateOf(ConfiguredFeedAssignments(null, null))
+        var covered by mutableStateOf(false)
+        compose.setContent { Picker(episodes, television = false, covered = covered, initialAssignments = assignments,
+            onAssignmentsChanged = { assignments = it }) {} }
+        compose.onNodeWithText("Episodes ›").performClick()
+        compose.onNodeWithContentDescription("Assign ${broadcast.title} to feed A").performClick().assertIsOn()
+        covered = true
+        compose.onNodeWithText("‹ Back").assertDoesNotExist()
+        compose.onNodeWithText(broadcast.title).assertDoesNotExist()
+        covered = false
+        compose.onNodeWithText("‹ Back").assertDoesNotExist()
+        compose.onNodeWithText("Episodes ›").assertExists()
+        compose.onNodeWithText("A: ${broadcast.title}").assertExists()
+        compose.onNodeWithText("Watch").assertIsEnabled()
     }
 
     @Test fun groupTabsFollowTheProviderAndABroadcastIsChosenForAWithItsDuration() {

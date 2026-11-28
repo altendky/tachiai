@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import net.fstab.tachiai.feature.presentation.RemoteButton as Button
@@ -89,15 +90,20 @@ internal fun PrototypeSourcePicker(message: String?, onConnections: (() -> Unit)
     // False until saved setup is first read: the streams list and its messages
     // would describe an empty setup that is only still loading (#784).
     setupLoaded: Boolean = true,
+    // The viewer is in front of this kept composition (#790). Covering and
+    // uncovering each start the picker's own state over, as a new picker did.
+    // The count of covers keeps that reset even if no frame saw it covered.
+    covered: Boolean = false, covers: Long = 0,
     onWatch: (ConfiguredFeedAssignments) -> Unit) {
-    var a by rememberSaveable(assignmentRestoreGeneration) { mutableStateOf<String?>(encodeConfiguredFeedChoice(initialAssignments.a)) }
-    var b by rememberSaveable(assignmentRestoreGeneration) { mutableStateOf<String?>(encodeConfiguredFeedChoice(initialAssignments.b)) }
-    var aEpisode by rememberSaveable(assignmentRestoreGeneration) { mutableStateOf<String?>(initialAssignments.aEpisode?.encode()) }
-    var bEpisode by rememberSaveable(assignmentRestoreGeneration) { mutableStateOf<String?>(initialAssignments.bEpisode?.encode()) }
+    var a by rememberSaveable(assignmentRestoreGeneration, covered, covers) { mutableStateOf<String?>(encodeConfiguredFeedChoice(initialAssignments.a)) }
+    var b by rememberSaveable(assignmentRestoreGeneration, covered, covers) { mutableStateOf<String?>(encodeConfiguredFeedChoice(initialAssignments.b)) }
+    var aEpisode by rememberSaveable(assignmentRestoreGeneration, covered, covers) { mutableStateOf<String?>(initialAssignments.aEpisode?.encode()) }
+    var bEpisode by rememberSaveable(assignmentRestoreGeneration, covered, covers) { mutableStateOf<String?>(initialAssignments.bEpisode?.encode()) }
     // The collection item whose Episodes page is open, as its encoded choice.
-    var browsing by rememberSaveable { mutableStateOf<String?>(null) }
-    var moreExpanded by rememberSaveable { mutableStateOf(false) }
-    var sharingSetupOpen by rememberSaveable { mutableStateOf(false) }
+    // Covering closes the page, so its loads and Back stop behind the viewer.
+    var browsing by rememberSaveable(covered, covers) { mutableStateOf<String?>(null) }
+    var moreExpanded by rememberSaveable(covered, covers) { mutableStateOf(false) }
+    var sharingSetupOpen by rememberSaveable(covered, covers) { mutableStateOf(false) }
     // Consecutive A/B callbacks can precede recomposition; read current saved
     // state rather than replacing the other slot from a rendered snapshot.
     fun current() = decodeConfiguredFeedAssignments(a, b, aEpisode, bEpisode)
@@ -116,10 +122,10 @@ internal fun PrototypeSourcePicker(message: String?, onConnections: (() -> Unit)
         ?.takeIf { episodes != null && collectionEpisodesSupported(it.entry.resource) }
     if (browsing != null && browsed == null) browsing = null
     // TV: Back returns focus to the collection's Episodes button.
-    val episodesButtons = remember { mutableMapOf<String, FocusRequester>() }
-    var returnFocus by remember { mutableStateOf<String?>(null) }
+    val episodesButtons = remember(covered, covers) { mutableMapOf<String, FocusRequester>() }
+    var returnFocus by remember(covered, covers) { mutableStateOf<String?>(null) }
     fun closeEpisodes() { returnFocus = browsing; browsing = null }
-    BackHandler(enabled = browsed != null && !startingPlayback) { closeEpisodes() }
+    BackHandler(enabled = browsed != null && !startingPlayback && !covered) { closeEpisodes() }
     val televisionFocus = LocalTelevision.current
     LaunchedEffect(browsed == null, returnFocus) {
         val target = returnFocus
@@ -130,7 +136,7 @@ internal fun PrototypeSourcePicker(message: String?, onConnections: (() -> Unit)
     }
     // Recovery instructions must not consume the entire assignment viewport on
     // compact screens. Keep every blocked-picker control reachable by scrolling.
-    val recoveryScroll = rememberScrollState()
+    val recoveryScroll = rememberSaveable(covered, covers, saver = ScrollState.Saver) { ScrollState(0) }
     val television = LocalTelevision.current
     val entry = remember { FocusRequester() }
     val firstAssignment = providerInstances.asSequence().flatMap { instance ->
@@ -143,8 +149,10 @@ internal fun PrototypeSourcePicker(message: String?, onConnections: (() -> Unit)
         else -> null
     }
     fun preferred(kind: String) = if (television && entryKind == kind) Modifier.focusRequester(entry) else Modifier
-    Column(Modifier.fillMaxSize().safeDrawingPadding().tvFocusGroup(setupReady, configuredSources.map { it.id },
-        if (entryKind != null) entry else null)
+    // Uncovering adds a new TV focus group: no focus is restored from before the
+    // viewer, and focus enters at the picker's entry as it does for a new picker.
+    Column(Modifier.fillMaxSize().safeDrawingPadding().then(if (covered) Modifier
+        else Modifier.tvFocusGroup(setupReady, configuredSources.map { it.id }, if (entryKind != null) entry else null))
         .then(if (onRecovery != null) Modifier.verticalScroll(recoveryScroll) else Modifier)
         .padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -197,7 +205,8 @@ internal fun PrototypeSourcePicker(message: String?, onConnections: (() -> Unit)
             onBack = ::closeEpisodes, onAssign = ::assignEpisode,
             // The recovery layout already scrolls the whole picker.
             scroll = onRecovery == null, modifier = if (onRecovery != null) Modifier else Modifier.weight(1f))
-        else if (setupLoaded) Column(if (onRecovery != null) Modifier else Modifier.weight(1f).verticalScroll(rememberScrollState()),
+        else if (setupLoaded) Column(if (onRecovery != null) Modifier else Modifier.weight(1f)
+            .verticalScroll(rememberSaveable(covered, covers, saver = ScrollState.Saver) { ScrollState(0) }),
             verticalArrangement = Arrangement.spacedBy(12.dp)) {
             providerInstances.forEach { instance ->
                 val providerName = providerDisplayNames(instance).inline

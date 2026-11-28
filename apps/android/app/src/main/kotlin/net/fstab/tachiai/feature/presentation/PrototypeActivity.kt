@@ -296,6 +296,9 @@ open class PrototypeActivity : ComponentActivity() {
     private var pickerRestoreGeneration by mutableStateOf(0L)
     private var pickerSelectionRevision = 0L
     private var pickerSelectionMessage by mutableStateOf<String?>(null)
+    // The viewer is in front of the kept picker (#790).
+    private var pickerCovered by mutableStateOf(false)
+    private var pickerCovers by mutableStateOf(0L)
     private var providerInstances by mutableStateOf(defaultProviderInstances())
     private var configuredSources by mutableStateOf(emptyList<ConfiguredSource>())
     private var activeConfiguredSources = emptyList<ConfiguredSource?>()
@@ -527,10 +530,14 @@ open class PrototypeActivity : ComponentActivity() {
         root = null; progress = null; returnButton = null
         ViewerMainSteps.time("pickerOrientation") { requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED }
         ViewerMainSteps.time("pickerSystemBars") { styleSystemBars(false) }
-        // Timed apart from composing (#769): detaching the viewer's views,
-        // which setContent would otherwise do as it replaces them.
+        // Timed apart from composing (#769): detaching the viewer's views.
         ViewerMainSteps.time("pickerDetachViewer") { (previous?.parent as? ViewGroup)?.removeView(previous) }
-        ViewerMainSteps.time<Unit>("pickerCompose") { setContent { TachiaiPrototypeTheme { PrototypeSourcePicker(listOfNotNull(setupMessage ?: message, pickerSelectionMessage).joinToString("\n").ifBlank { null },
+        // The picker kept behind the viewer is shown again and updated in place
+        // (#790); its recomposition runs in the next frame. Only the first
+        // picker, or one after recreation, is composed new here.
+        ViewerMainSteps.time<Unit>("pickerCompose") {
+            revealKeptPicker(findViewById(android.R.id.content)); pickerCovered = false
+            setContent { TachiaiPrototypeTheme { PrototypeSourcePicker(listOfNotNull(setupMessage ?: message, pickerSelectionMessage).joinToString("\n").ifBlank { null },
             onConnections = { startActivity(Intent(this, ConnectionProfilesActivity::class.java)) },
             setupReady = setupReady, providerInstances = providerInstances, configuredSources = configuredSources,
             initialAssignments = pickerAssignments, onAssignmentsChanged = ::rememberPickerAssignments,
@@ -543,7 +550,7 @@ open class PrototypeActivity : ComponentActivity() {
             obsoleteSetup = obsoleteSetup, onResetStreamSettings = ::resetStreamSettings,
             playbackAvailable = playbackAvailable, recoveryMessage = recoveryMessage,
             onRecovery = if (hasRecovery) ({ showRecoveryDialog(true) }) else null,
-            startingPlayback = startingPlayback, setupLoaded = setupLoaded, onWatch = ::watch) } } }
+            startingPlayback = startingPlayback, setupLoaded = setupLoaded, covered = pickerCovered, covers = pickerCovers, onWatch = ::watch) } } }
     }
 
     private fun updateRecoveryState() {
@@ -821,7 +828,12 @@ open class PrototypeActivity : ComponentActivity() {
         })
         frame.addView(setup, FrameLayout.LayoutParams(-1, -1))
         root = frame
-        ViewerMainSteps.time("startSetupView") { setContentView(frame) }
+        ViewerMainSteps.time("startSetupView") {
+            // The picker stays composed behind the viewer (#790).
+            pickerCovered = hideKeptPicker(findViewById(android.R.id.content))
+            if (pickerCovered) pickerCovers++
+            addContentView(frame, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        }
         ViewerMainSteps.time("startCreateViewer") { createViewer() }
         prepareRoutes(selected, sharedBudget, run, setup, routePlan)
         updateProgress()

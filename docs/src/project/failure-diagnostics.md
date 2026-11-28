@@ -1050,7 +1050,7 @@ before a `Skipped N frames` line is the step that held the thread.
 | --- | --- |
 | `stop` | All of Stop, until the picker is shown again. |
 | `stopPicker`, `stopRefreshSetup` | Showing the picker, and queueing its setup read. |
-| `pickerOrientation`, `pickerSystemBars`, `pickerDetachViewer`, `pickerCompose` | Within `stopPicker`: releasing the viewer's landscape request, restyling the system bars, removing the viewer's views from the window, then composing the picker. |
+| `pickerOrientation`, `pickerSystemBars`, `pickerDetachViewer`, `pickerCompose` | Within `stopPicker`: releasing the viewer's landscape request, restyling the system bars, removing the viewer's views from the window, then showing the kept picker again and updating it (#790). |
 | `dispose` | The whole viewer teardown. It also runs when a new viewer opens. |
 | `disposeSavePositions`, `disposeMediaSession`, `disposeStartupScopes` | Queueing replay position writes, closing the TV media session, retiring startup scopes. |
 | `disposeSurfaces` | Detaching players from their surfaces, before the feeds close. |
@@ -1085,6 +1085,27 @@ Stop therefore detaches the surfaces before it closes the feeds.
 cleanup receipt's confirmation are unchanged. If the stop fails or the wait
 lapses, `release()` does the remaining work as before. Synchronous cleanup on
 the main thread, such as a construction rollback, never waits for the stop.
+
+### The picker stays composed behind the viewer (#790)
+
+`pickerCompose` was 147–303 ms at Stop, because returning from the viewer
+composed the whole picker again. Opening the viewer had replaced the picker's
+view, which ended its composition.
+
+The picker's view now stays in the window while the viewer is in front. It is
+hidden, so it is not drawn and takes no focus or accessibility, and the viewer's
+views are added over it. At Stop, `pickerCompose` shows it again and passes its
+new values. The recomposition then runs in the next frame, so it is counted in
+the `Choreographer` lines, not in `pickerCompose`. The first picker, and one
+after the Activity is recreated, is still composed new.
+
+The picker looks and acts as a new picker did. When the viewer covers it, and
+again when it returns, it starts its own state over: the Episodes page and
+menus close, the lists scroll to the top, and A/B show the Activity's current
+choices. The Episodes page therefore stops loading, and stops taking Back,
+behind the viewer. Shown again, the picker view is not handed focus. On TV,
+focus enters at Routes, Providers or the first assignment, not at the control
+that had focus before the viewer opened.
 
 ## Replay resume loading — 2026-11-26
 
